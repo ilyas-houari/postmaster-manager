@@ -1,0 +1,360 @@
+﻿"use client";
+
+import { useState } from "react";
+
+type Result = {
+  domain: string;
+  status: string;
+  error?: string;
+  record?: string;
+};
+
+type Action = "add" | "get" | "verify";
+
+export default function DomainsForm() {
+  const [domains, setDomains] = useState("");
+  const [addResults, setAddResults] = useState<Result[]>([]);
+  const [txtResults, setTxtResults] = useState<Result[]>([]);
+  const [verifyResults, setVerifyResults] = useState<Result[]>([]);
+  const [deleteResults, setDeleteResults] = useState<Result[]>([]);
+  const [records, setRecords] = useState<string[]>([]);
+  const [loading, setLoading] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+
+  const list = [...new Set(
+    domains.split(/[\s,;]+/)
+      .map(d => d.trim().toLowerCase())
+      .filter(Boolean)
+  )];
+
+  const busy = loading !== "";
+  const added = addResults.filter(r =>
+    ["ADDED", "ALREADY EXISTS"].includes(r.status)
+  ).length;
+  const verified = verifyResults.filter(
+    r => r.status === "VERIFIED"
+  ).length;
+
+  const allResults = [...addResults, ...txtResults, ...verifyResults, ...deleteResults];
+  const failed = allResults.filter(r => r.status === "FAILED").length;
+
+  async function request(domain: string, action: Action): Promise<Result> {
+    const response = await fetch(
+      action === "add" ? "/api/domains" : "/api/verify",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          action === "add" ? { domain } : { domain, action }
+        ),
+      }
+    );
+
+    const data = await response.json();
+    return {
+      domain,
+      status: data.status || "FAILED",
+      error: data.error || (!response.ok ? "Request failed" : undefined),
+      record: data.record,
+    };
+  }
+
+  async function run(action: Action) {
+    if (busy || !list.length) return;
+    setLoading(action);
+    setProgress(0);
+    setCopied(false);
+
+    if (action === "add") {
+      setAddResults([]);
+      setTxtResults([]);
+      setRecords([]);
+      setVerifyResults([]);
+    }
+    if (action === "get") {
+      setTxtResults([]);
+      setRecords([]);
+    }
+    if (action === "verify") setVerifyResults([]);
+
+    const collectedRecords: string[] = [];
+
+    for (let i = 0; i < list.length; i++) {
+      const domain = list[i];
+      try {
+        const result = await request(domain, action);
+
+        if (action === "add") {
+          setAddResults(p => [...p, result]);
+
+          if (["ADDED", "ALREADY EXISTS"].includes(result.status)) {
+            try {
+              const txt = await request(domain, "get");
+              setTxtResults(p => [...p, txt]);
+              if (txt.record) {
+                collectedRecords.push(txt.record);
+                setRecords(p => [...p, txt.record!]);
+              }
+            } catch {
+              setTxtResults(p => [...p, {
+                domain, status: "FAILED", error: "TXT extraction failed"
+              }]);
+            }
+          }
+        }
+
+        if (action === "get") {
+          setTxtResults(p => [...p, result]);
+          if (result.record) setRecords(p => [...p, result.record!]);
+        }
+
+        if (action === "verify") {
+          setVerifyResults(p => [...p, result]);
+        }
+      } catch {
+        const error = { domain, status: "FAILED", error: "Connection error" };
+        if (action === "add") setAddResults(p => [...p, error]);
+        if (action === "get") setTxtResults(p => [...p, error]);
+        if (action === "verify") setVerifyResults(p => [...p, error]);
+      }
+      setProgress(i + 1);
+    }
+    if (action === "add" && collectedRecords.length > 0) {
+      try {
+        await navigator.clipboard.writeText(collectedRecords.join("\n"));
+        setCopied(true);
+      } catch {
+        setCopied(false);
+        alert("Domains processed, but automatic copy was blocked. Please use COPY TXT.");
+      }
+    }
+
+    setLoading("");
+  }
+
+  async function deleteDomains() {
+    if (busy || !list.length) return;
+
+    const confirmed = window.confirm(
+      `DELETE ${list.length} domain(s) from Google Postmaster?
+
+${list.join("\n")}
+
+This will remove them from Postmaster, not from DNS.`
+    );
+
+    if (!confirmed) return;
+
+    setLoading("delete");
+    setProgress(0);
+    setDeleteResults([]);
+    setAddResults([]);
+    setTxtResults([]);
+    setVerifyResults([]);
+    setRecords([]);
+    setCopied(false);
+
+    for (let i = 0; i < list.length; i++) {
+      const domain = list[i];
+
+      try {
+        const response = await fetch("/api/domains/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ domain }),
+        });
+
+        const data = await response.json();
+
+        setDeleteResults(prev => [...prev, {
+          domain,
+          status: data.status || "FAILED",
+          error: data.error || (!response.ok ? "Delete failed" : undefined),
+        }]);
+      } catch {
+        setDeleteResults(prev => [...prev, {
+          domain,
+          status: "FAILED",
+          error: "Connection error",
+        }]);
+      }
+
+      setProgress(i + 1);
+    }
+
+    setLoading("");
+  }
+  async function copyRecords() {
+    if (!records.length) return;
+    try {
+      await navigator.clipboard.writeText(records.join("\n"));
+      setCopied(true);
+    } catch {
+      alert("Copy failed. Please check clipboard permissions.");
+    }
+  }
+
+  const stats = [
+    { label: "Domains", value: list.length, color: "text-blue-400" },
+    { label: "Added", value: added, color: "text-emerald-400" },
+    { label: "TXT Ready", value: records.length, color: "text-violet-400" },
+    { label: "Verified", value: verified, color: "text-cyan-400" },
+  ];
+
+  const buttons = [
+    { label: "ADD + GET TXT + COPY", action: "add" as Action, color: "bg-blue-600 hover:bg-blue-500" },
+    { label: "GET TXT", action: "get" as Action, color: "bg-violet-700 hover:bg-violet-600" },
+    { label: "VERIFY ALL", action: "verify" as Action, color: "bg-cyan-800 hover:bg-cyan-700" },
+  ];
+
+  function Results({ title, data }: { title: string; data: Result[] }) {
+    if (!data.length) return null;
+    return (
+      <div className="space-y-1">
+        <p className="text-xs font-semibold text-slate-400">{title}</p>
+        {data.map((r, i) => (
+          <div key={`${r.domain}-${i}`}
+            className="flex items-center justify-between gap-3 rounded-lg bg-white/5 px-3 py-2 text-xs">
+            <div className="min-w-0">
+              <span className="break-all text-white">{r.domain}</span>
+              {r.error && <p className="text-rose-400">{r.error}</p>}
+            </div>
+            <span className={r.status === "FAILED"
+              ? "shrink-0 text-rose-400"
+              : "shrink-0 text-emerald-400"}>
+              {r.status}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-4 gap-2">
+        {stats.map(s => (
+          <div key={s.label}
+            className="rounded-xl border border-white/10 bg-white/5 px-2 py-3 text-center">
+            <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
+            <p className="mt-1 text-[10px] text-slate-400">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-bold text-white">Domain Management</h2>
+          <span className="text-xs text-blue-300">{list.length} domains</span>
+        </div>
+
+        <textarea
+          value={domains}
+          onChange={e => {
+            setDomains(e.target.value);
+            setAddResults([]);
+            setTxtResults([]);
+            setVerifyResults([]);
+            setDeleteResults([]);
+            setRecords([]);
+            setCopied(false);
+            setShowDetails(false);
+          }}
+          disabled={busy}
+          rows={4}
+          placeholder={"domain1.com\ndomain2.com\ndomain3.com"}
+          spellCheck={false}
+          className="w-full resize-y rounded-lg border border-white/10 bg-slate-900 p-3 font-mono text-sm text-white outline-none focus:border-blue-500 disabled:opacity-50"
+        />
+
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          {buttons.slice(0, 2).map(b => (
+            <button key={b.action}
+              onClick={() => run(b.action)}
+              disabled={busy || !list.length}
+              className={`rounded-lg px-3 py-3 text-xs font-bold text-white transition disabled:opacity-40 ${b.color}`}>
+              {loading === b.action ? "PROCESSING..." : b.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <button onClick={copyRecords} disabled={!records.length}
+          className="rounded-xl bg-emerald-700 px-3 py-3 text-xs font-bold text-white hover:bg-emerald-600 disabled:opacity-40">
+          {copied ? "COPIED!" : `COPY TXT (${records.length})`}
+        </button>
+
+        <button onClick={() => run("verify")}
+          disabled={busy || !list.length}
+          className="rounded-xl bg-cyan-800 px-3 py-3 text-xs font-bold text-white hover:bg-cyan-700 disabled:opacity-40">
+          {loading === "verify" ? "VERIFYING..." : "VERIFY ALL"}
+        </button>
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={deleteDomains}
+          disabled={busy || !list.length}
+          className="rounded-xl border border-rose-500/30 bg-rose-600/15 px-5 py-2.5 text-xs font-bold text-rose-300 transition hover:bg-rose-600/25 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {loading === "delete" ? "DELETING..." : "DELETE DOMAINS"}
+        </button>
+      </div>
+
+      {busy && (
+        <div className="rounded-lg bg-blue-500/10 px-3 py-2 text-xs text-blue-200">
+          Processing {progress} / {list.length} domains...
+          <div className="mt-2 h-1 overflow-hidden rounded bg-slate-700">
+            <div className="h-full bg-blue-500 transition-all"
+              style={{ width: `${list.length ? progress / list.length * 100 : 0}%` }} />
+          </div>
+        </div>
+      )}
+
+      {allResults.length > 0 && (
+        <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-semibold text-white">
+              Results
+              <span className="ml-3 text-slate-400">
+                {allResults.length} Total
+              </span>
+              <span className="ml-3 text-emerald-400">
+                {added} Added
+              </span>
+              <span className="ml-3 text-rose-400">
+                {failed} Failed
+              </span>
+            </p>
+
+            <button type="button"
+              onClick={() => setShowDetails(v => !v)}
+              aria-expanded={showDetails}
+              className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-blue-300 hover:bg-white/10">
+              {showDetails ? "◉ Hide" : "◉ View"}
+            </button>
+          </div>
+
+          {showDetails && (
+            <div className="mt-3 max-h-48 space-y-3 overflow-y-auto">
+              <Results title="Add Results" data={addResults} />
+              <Results title="TXT Results" data={txtResults} />
+              <Results title="Verification Results" data={verifyResults} />
+              <Results title="Delete Results" data={deleteResults} />
+            </div>
+          )}
+        </div>
+      )}
+
+      <p className="pt-1 text-center text-[10px] text-slate-500">
+        Created by Ilyas Houari
+      </p>
+    </div>
+  );
+}
+
+

@@ -1,7 +1,16 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+﻿import { hasAppAccess } from "@/lib/access";
+import { NextRequest, NextResponse } from "next/server";
 import { getGoogleToken } from "@/lib/google-token";
 
 export async function POST(req: NextRequest) {
+  const allowed = await hasAppAccess();
+
+  if (!allowed) {
+    return NextResponse.json(
+      { status: "FAILED", error: "Access denied. Contact @ilyas_houari8 on Telegram." },
+      { status: 403 }
+    );
+  }
   let accessToken: string;
 
   try {
@@ -91,3 +100,4 @@ export async function POST(req: NextRequest) {
     }, { status: 500 });
   }
 }
+
