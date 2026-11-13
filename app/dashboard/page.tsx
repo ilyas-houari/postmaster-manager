@@ -1,4 +1,5 @@
-﻿import { hasAppAccess } from "@/lib/access";
+import RequestAccessButton from "./request-access-button";
+import { hasAppAccess } from "@/lib/access";
 import { Suspense } from "react";
 import { auth, signIn, signOut } from "@/auth";
 import DomainsForm from "../domains-form";
@@ -23,8 +24,8 @@ async function Dashboard() {
             To request access, please contact the administrator on Telegram.
           </p>
 
-          <a
-            href="https://t.me/ilyas_houari8"
+          <RequestAccessButton />
+          <a href="https://t.me/ilyas_houari8"
             target="_blank"
             rel="noopener noreferrer"
             className="mt-6 block rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white transition hover:bg-indigo-500"
