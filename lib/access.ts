@@ -1,5 +1,5 @@
 ﻿import { auth } from "@/auth";
-import { get } from "@vercel/global-config";
+import { getAllowedEmails } from "@/lib/github-access";
 
 export async function hasAppAccess(): Promise<boolean> {
   const session = await auth();
@@ -9,35 +9,25 @@ export async function hasAppAccess(): Promise<boolean> {
 
   const admin = process.env.ADMIN_EMAIL?.trim().toLowerCase();
 
-  if (admin && email === admin) {
-    return true;
-  }
+  if (admin && email === admin) return true;
 
   const localAllowed = (process.env.ALLOWED_EMAILS || "")
     .split(",")
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
 
-  if (localAllowed.includes(email)) {
-    return true;
-  }
-
-  // Never grant access when configuration is unavailable.
-  if (!process.env.GLOBAL_CONFIG && !process.env.EDGE_CONFIG) {
-    return false;
-  }
+  if (localAllowed.includes(email)) return true;
 
   try {
-    const allowed = await get<string[]>("allowed_emails");
-
-    if (!Array.isArray(allowed)) return false;
+    const allowed = await getAllowedEmails();
 
     return allowed.some(
-      (value) => typeof value === "string" &&
+      (value) =>
+        typeof value === "string" &&
         value.trim().toLowerCase() === email
     );
   } catch (error) {
-    console.error("Global Config access check failed:", error);
+    console.error("GitHub access check failed:", error);
     return false;
   }
 }
