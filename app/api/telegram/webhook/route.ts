@@ -1,7 +1,12 @@
-﻿import { NextRequest, NextResponse } from "next/server";
-import { approveEmail } from "@/lib/github-access";
+import { NextRequest, NextResponse } from "next/server";
+import { approveEmail, revokeEmail } from "@/lib/github-access";
 
 type TelegramUpdate = {
+  message?: {
+    text?: string;
+    from?: { id: number };
+    chat: { id: number; type: string };
+  };
   callback_query?: {
     id: string;
     from: { id: number };
@@ -26,6 +31,60 @@ export async function POST(req: NextRequest) {
   }
 
   const update = (await req.json()) as TelegramUpdate;
+  // Admin-only Telegram commands
+  if (update.message) {
+    const msg = update.message;
+    const adminId = process.env.TELEGRAM_ADMIN_CHAT_ID;
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+    if (
+      !adminId ||
+      !botToken ||
+      String(msg.from?.id) !== adminId ||
+      String(msg.chat.id) !== adminId ||
+      msg.chat.type !== "private"
+    ) {
+      return NextResponse.json({ ok: true });
+    }
+
+    const command = msg.text?.trim() || "";
+    const match = command.match(/^\/revoke(?:@\w+)?\s+([^\s]+)$/i);
+
+    if (match) {
+      let reply = "";
+
+      try {
+        const email = match[1].toLowerCase();
+        const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+        const localAllowed = (process.env.ALLOWED_EMAILS || "")
+          .split(",")
+          .map((value) => value.trim().toLowerCase());
+
+        if (email === adminEmail || localAllowed.includes(email)) {
+          reply = "Cannot revoke this user. Email is configured in environment variables.";
+        } else {
+          const removed = await revokeEmail(email);
+          reply = removed
+            ? `ACCESS REVOKED: ${email}`
+            : `Email not found: ${email}`;
+        }
+      } catch {
+        reply = "Revoke failed. Please try again.";
+      }
+
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: adminId,
+          text: reply,
+        }),
+      });
+    }
+
+    return NextResponse.json({ ok: true });
+  }
+
   const cb = update.callback_query;
 
   if (!cb) return NextResponse.json({ ok: true });

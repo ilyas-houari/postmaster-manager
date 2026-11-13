@@ -104,3 +104,65 @@ export async function approveEmail(email: string): Promise<void> {
 
   throw new Error("GitHub update conflict");
 }
+
+export async function revokeEmail(email: string): Promise<boolean> {
+  const normalized = email.trim().toLowerCase();
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    throw new Error("Invalid email");
+  }
+
+  const { url, headers } = githubConfig();
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await fetch(url, {
+      headers,
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error(`GitHub read failed: ${response.status}`);
+    }
+
+    const file = await response.json();
+    const data = JSON.parse(
+      Buffer.from(file.content, "base64").toString("utf8")
+    );
+
+    if (!Array.isArray(data.emails)) {
+      throw new Error("Invalid allowed_emails.json");
+    }
+
+    const emails = data.emails.filter(
+      (value: string) => value.trim().toLowerCase() !== normalized
+    );
+
+    if (emails.length === data.emails.length) return false;
+
+    const content = Buffer.from(
+      JSON.stringify({ emails }, null, 2) + "\n"
+    ).toString("base64");
+
+    const update = await fetch(url, {
+      method: "PUT",
+      headers: {
+        ...headers,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message: "Revoke user access",
+        content,
+        sha: file.sha,
+      }),
+      cache: "no-store",
+    });
+
+    if (update.ok) return true;
+
+    if (update.status !== 409) {
+      throw new Error(`GitHub update failed: ${update.status}`);
+    }
+  }
+
+  throw new Error("GitHub update conflict");
+}
