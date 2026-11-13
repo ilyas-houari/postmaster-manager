@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useMemo, useState, type ReactNode } from "react";
 
@@ -136,7 +136,7 @@ export default function DomainsForm({ email, switchAccount }: { email: string; s
 
   function ResultList({ title, data }: { title: string; data: Result[] }) {
     if (!data.length) return null;
-    return <section className="space-y-2"><h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{title} · {data.length}</h3>
+    return <section className="space-y-2"><h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{title} Â· {data.length}</h3>
       {data.map((r, index) => <div key={`${r.domain}-${index}`} className="flex items-start justify-between gap-3 rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2.5">
         <div className="min-w-0"><div className="break-all text-xs font-medium text-slate-200">{r.domain}</div>{r.error && <p className="mt-1 break-words text-xs text-rose-300">{r.error}</p>}</div><StatusPill status={r.status}/>
       </div>)}
@@ -162,9 +162,9 @@ export default function DomainsForm({ email, switchAccount }: { email: string; s
         <div className="hidden flex-1 lg:block"/>
         <div className="hidden border-t border-white/[0.06] p-4 lg:block">
           <p className="truncate text-xs font-medium text-slate-300">{email}</p>
-          <p className="mt-1 text-[11px] text-emerald-400"><span className="mr-1">●</span> Connected</p>
+          <p className="mt-1 text-[11px] text-emerald-400"><span className="mr-1">â—</span> Connected</p>
           <div className="mt-3">{switchAccount}</div>
-          <p className="mt-5 text-[10px] text-slate-600">Created by Ilyas Houari</p>
+          
         </div>
       </aside>
 
@@ -192,14 +192,14 @@ export default function DomainsForm({ email, switchAccount }: { email: string; s
             <section className="flex flex-col rounded-xl border border-white/[0.07] bg-[#182231] p-4 lg:p-5">
               <div className="mb-3"><h2 className="text-sm font-semibold">Actions</h2><p className="mt-1 text-xs text-slate-400">Manage the domains above</p></div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                <button type="button" disabled={busy || !list.length} onClick={() => run("add")} className={`${btn} bg-indigo-500 text-white hover:bg-indigo-400 xl:col-span-2`}><Glyph name="plus" size={17}/>{loading === "add" ? "Processing…" : "Add · Get TXT · Copy"}</button>
-                <button type="button" disabled={busy || !list.length} onClick={() => run("get")} className={`${btn} border border-white/[0.09] bg-white/[0.055] text-slate-200 hover:bg-white/10`}><Glyph name="file" size={16}/>{loading === "get" ? "Loading…" : "Get TXT"}</button>
+                <button type="button" disabled={busy || !list.length} onClick={() => run("add")} className={`${btn} bg-indigo-500 text-white hover:bg-indigo-400 xl:col-span-2`}><Glyph name="plus" size={17}/>{loading === "add" ? "Processingâ€¦" : "Add Â· Get TXT Â· Copy"}</button>
+                <button type="button" disabled={busy || !list.length} onClick={() => run("get")} className={`${btn} border border-white/[0.09] bg-white/[0.055] text-slate-200 hover:bg-white/10`}><Glyph name="file" size={16}/>{loading === "get" ? "Loadingâ€¦" : "Get TXT"}</button>
                 <button type="button" disabled={!records.length || busy} onClick={copyRecords} className={`${btn} border border-white/[0.09] bg-white/[0.055] text-slate-200 hover:bg-white/10`}><Glyph name={copied ? "check" : "copy"} size={16}/>{copied ? "Copied" : `Copy TXT (${records.length})`}</button>
-                <button type="button" disabled={busy || !list.length} onClick={() => run("verify")} className={`${btn} border border-sky-500/20 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20`}><Glyph name="shield" size={16}/>{loading === "verify" ? "Verifying…" : "Verify all"}</button>
-                <button type="button" disabled={busy || !list.length} onClick={deleteDomains} className={`${btn} border border-rose-500/20 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20`}><Glyph name="trash" size={16}/>{loading === "delete" ? "Deleting…" : "Delete"}</button>
+                <button type="button" disabled={busy || !list.length} onClick={() => run("verify")} className={`${btn} border border-sky-500/20 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20`}><Glyph name="shield" size={16}/>{loading === "verify" ? "Verifyingâ€¦" : "Verify all"}</button>
+                <button type="button" disabled={busy || !list.length} onClick={deleteDomains} className={`${btn} border border-rose-500/20 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20`}><Glyph name="trash" size={16}/>{loading === "delete" ? "Deletingâ€¦" : "Delete"}</button>
               </div>
               <div className="mt-4 border-t border-white/[0.07] pt-3">
-                {busy ? <><div className="mb-2 flex items-center justify-between text-xs text-slate-300"><span>Processing {loading}…</span><span>{progress}/{list.length}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-indigo-400 transition-all" style={{ width: `${list.length ? progress / list.length * 100 : 0}%` }}/></div></>
+                {busy ? <><div className="mb-2 flex items-center justify-between text-xs text-slate-300"><span>Processing {loading}â€¦</span><span>{progress}/{list.length}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-indigo-400 transition-all" style={{ width: `${list.length ? progress / list.length * 100 : 0}%` }}/></div></>
                   : <p className="text-xs leading-5 text-slate-400">{message || "TXT records remain hidden. Copy them directly to your DNS app."}</p>}
               </div>
             </section>
@@ -211,7 +211,7 @@ export default function DomainsForm({ email, switchAccount }: { email: string; s
         </div>}
 
         {view === "activity" && <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 lg:p-6">
-          <div className="flex items-center justify-between"><p className="text-xs text-slate-400">Results from the current session · {allResults.length} operations</p><button type="button" onClick={() => setView("workspace")} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-200 hover:bg-white/10">Back to workspace</button></div>
+          <div className="flex items-center justify-between"><p className="text-xs text-slate-400">Results from the current session Â· {allResults.length} operations</p><button type="button" onClick={() => setView("workspace")} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-200 hover:bg-white/10">Back to workspace</button></div>
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto rounded-xl border border-white/[0.07] bg-[#182231] p-4 lg:p-5">
             {!allResults.length && <p className="text-sm text-slate-400">No operations yet. Add or verify a domain to see results here.</p>}
             <ResultList title="Add results" data={addResults}/><ResultList title="TXT results" data={txtResults}/><ResultList title="Verification results" data={verifyResults}/><ResultList title="Delete results" data={deleteResults}/>
@@ -223,3 +223,4 @@ export default function DomainsForm({ email, switchAccount }: { email: string; s
     </div>
   );
 }
+
