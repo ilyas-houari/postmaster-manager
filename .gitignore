@@ -54,3 +54,4 @@ app/api/**/*.backup.txt
 
 
 **/*backup*.txt
+.vercel
