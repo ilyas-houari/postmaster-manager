@@ -162,7 +162,7 @@ export default function DomainsForm({ email, switchAccount }: { email: string; s
         <div className="hidden flex-1 lg:block"/>
         <div className="hidden border-t border-white/[0.06] p-4 lg:block">
           <p className="truncate text-xs font-medium text-slate-300">{email}</p>
-          <p className="mt-1 text-[11px] text-emerald-400"><span className="mr-1">*</span> Connected</p>
+          <p className="mt-1 text-[11px] text-emerald-400"><span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400"></span>Connected</p>
           <div className="mt-3">{switchAccount}</div>
           
         </div>
