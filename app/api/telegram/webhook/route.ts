@@ -1,3 +1,4 @@
+﻿import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { approveEmail, revokeEmail } from "@/lib/github-access";
 
@@ -21,7 +22,7 @@ type TelegramUpdate = {
 };
 
 export async function POST(req: NextRequest) {
-  const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  const secret = process.env.TELEGRAM_BOT_TOKEN ? createHash("sha256").update(process.env.TELEGRAM_BOT_TOKEN).digest("hex") : "";
 
   if (
     !secret ||
@@ -166,3 +167,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Action failed" }, { status: 500 });
   }
 }
+
