@@ -39,3 +39,18 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local backups
+app/*.backup.txt
+app/*backup*.txt
+auth.backup.txt
+app/api/**/*.backup
+app/api/**/*.backup.txt
+
+# Google credentials
+.env
+.env.*
+!.env.example
+
+
+**/*backup*.txt
