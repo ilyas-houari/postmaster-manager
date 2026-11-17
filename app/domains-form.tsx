@@ -1,15 +1,17 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
+import AnalyticsClient from "./dashboard/analytics/analytics-client";
 
 type Result = { domain: string; status: string; error?: string; record?: string };
 type Action = "add" | "get" | "verify";
-type View = "workspace" | "activity";
+type View = "workspace" | "activity" | "analytics";
 
 function Glyph({ name, size = 18 }: { name: string; size?: number }) {
   const shared = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   const path: Record<string, ReactNode> = {
     grid: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
+    chart: <><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/></>,
     history: <><path d="M3 12a9 9 0 1 0 2.8-6.5"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></>,
     user: <><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></>,
     plus: <path d="M12 5v14M5 12h14"/>,
@@ -152,7 +154,7 @@ export default function DomainsForm({ email, switchAccount }: { email: string; s
         </div>
         <div className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-600">Workspace</div>
         <nav className="flex gap-1 px-3 pb-3 lg:flex-col" aria-label="Workspace navigation">
-          {([{ id: "workspace", icon: "grid", label: "Dashboard" }, { id: "activity", icon: "history", label: "Activity", count: allResults.length }] as const).map(item =>
+          {([{ id: "workspace", icon: "grid", label: "Dashboard" }, { id: "activity", icon: "history", label: "Activity", count: allResults.length }, { id: "analytics", icon: "chart", label: "Analytics & Export" }] as const).map(item =>
             <button key={item.id} type="button" onClick={() => setView(item.id)}
               className={`flex flex-1 items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] transition lg:flex-none ${view === item.id ? "bg-indigo-500/15 font-semibold text-indigo-200" : "text-slate-400 hover:bg-white/5 hover:text-white"}`}>
               <Glyph name={item.icon} size={17}/><span>{item.label}</span>{"count" in item && item.count > 0 && <span className="ml-auto rounded-md bg-white/10 px-1.5 py-0.5 text-[10px]">{item.count}</span>}
@@ -170,11 +172,13 @@ export default function DomainsForm({ email, switchAccount }: { email: string; s
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] bg-[#121b28] px-5 py-4 lg:px-7">
-          <div><p className="text-[11px] font-medium text-indigo-300">POSTMASTER / {view === "workspace" ? "DASHBOARD" : "ACTIVITY"}</p>
-            <h1 className="mt-0.5 text-xl font-semibold tracking-tight">{view === "workspace" ? "Domain workspace" : "Activity history"}</h1>
+          <div><p className="text-[11px] font-medium text-indigo-300">POSTMASTER / {view === "workspace" ? "DASHBOARD" : view === "activity" ? "ACTIVITY" : "ANALYTICS"}</p>
+            <h1 className="mt-0.5 text-xl font-semibold tracking-tight">{view === "workspace" ? "Domain workspace" : view === "activity" ? "Activity history" : "Analytics & Export"}</h1>
           </div>
           <div className="flex items-center gap-2 rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2 text-xs text-slate-300"><span className="h-2 w-2 rounded-full bg-emerald-400"/><span className="hidden sm:inline">Google connected</span><span className="sm:hidden">Connected</span></div>
         </header>
+
+        {view === "analytics" && <div className="min-h-0 flex-1 overflow-y-auto"><AnalyticsClient /></div>}
 
         {view === "workspace" && <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 lg:overflow-hidden lg:p-6">
           <div className="grid shrink-0 grid-cols-2 gap-3 xl:grid-cols-4">
