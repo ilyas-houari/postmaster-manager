@@ -56,6 +56,7 @@ const metricGroups: Record<string, string[]> = {
   spam: ["spam"],
   auth: ["spf", "dkim", "dmarc"],
   tls: ["tls_inbound", "tls_outbound"],
+  tls_count: ["count_tls_inbound", "count_tls_outbound"],
 };
 
 const labels: Record<string, string> = {
@@ -65,6 +66,8 @@ const labels: Record<string, string> = {
   dmarc: "DMARC",
   tls_inbound: "TLS Inbound",
   tls_outbound: "TLS Outbound",
+  count_tls_inbound: "TLS Inbound Count",
+  count_tls_outbound: "TLS Outbound Count",
 };
 
 function csvCell(value: unknown) {

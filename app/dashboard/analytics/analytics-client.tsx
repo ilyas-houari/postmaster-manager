@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import DomainsOverview from "./domains-overview";
+import { createAnalysisRunner, fetchWithRetry } from "./analysis-runner";
 import { downloadReport, downloadComplianceCSV, downloadFeedbackCSV } from "./export-utils";
 
 type Stat = {
@@ -20,6 +22,35 @@ type Row = {
   value: string;
 };
 
+type ComplianceCache = {
+  domain: string;
+  rows: { requirement: string; status: string }[];
+  oneClick: string;
+  honor: string;
+  deliverability: string;
+  reason: string;
+};
+
+type FeedbackCache = {
+  domain: string;
+  ids: { date: string; id: string }[];
+};
+
+// Memory lasts only while the page is open.
+// A full browser refresh clears this cache.
+let analyticsViewCache = {
+  input: "",
+  days: 7,
+  selectedMetrics: ["spam", "auth", "delivery"] as string[],
+  includeZeroErrors: true,
+  rows: [] as Row[],
+  failures: [] as string[],
+  complianceResults: [] as ComplianceCache[],
+  feedbackResults: [] as FeedbackCache[],
+  detailFilters: {} as Record<string, string>,
+  activeDetailFilter: "",
+  progress: "",
+};
 function formatValue(stat: Stat) {
   const v = stat.value;
   if (!v) return "N/A";
@@ -38,8 +69,14 @@ function csvEscape(value: string) {
 }
 
 export default function AnalyticsClient() {
-  const [input, setInput] = useState("");
-  const [includeZeroErrors, setIncludeZeroErrors] = useState(true);
+  const [input, setInput] = useState(analyticsViewCache.input);
+  const [includeZeroErrors, setIncludeZeroErrors] = useState(analyticsViewCache.includeZeroErrors);
+  const [detailFilters, setDetailFilters] = useState<Record<string, string>>(analyticsViewCache.detailFilters);
+  const [activeDetailFilter, setActiveDetailFilter] = useState(analyticsViewCache.activeDetailFilter);
+
+  function updateDetailFilter(key: string, value: string) {
+    setDetailFilters(prev => ({ ...prev, [key]: value }));
+  }
   const [errorDetails, setErrorDetails] = useState<{
     domain: string;
     date: string;
@@ -49,14 +86,13 @@ export default function AnalyticsClient() {
     { id: "compliance", label: "Compliance Status" },
     { id: "spam", label: "Spam Rate" },
     { id: "auth", label: "Authentication - SPF / DKIM / DMARC" },
-    { id: "tls", label: "TLS Encryption" },
+    { id: "tls", label: "TLS Encryption Rate (%)" },
+    { id: "tls_count", label: "TLS Encrypted Message Counts" },
     { id: "delivery", label: "Delivery Errors" },
     { id: "feedback", label: "Feedback Loop" },
   ];
 
-  const [selectedMetrics, setSelectedMetrics] = useState<string[]>([
-    "spam", "auth", "delivery"
-  ]);
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(analyticsViewCache.selectedMetrics);
 
   function toggleMetric(id: string) {
     setSelectedMetrics(prev =>
@@ -65,12 +101,12 @@ export default function AnalyticsClient() {
         : [...prev, id]
     );
   }
-  const [days, setDays] = useState(7);
-  const [rows, setRows] = useState<Row[]>([]);
+  const [days, setDays] = useState(analyticsViewCache.days);
+  const [rows, setRows] = useState<Row[]>(analyticsViewCache.rows);
   const [feedbackResults, setFeedbackResults] = useState<{
     domain: string;
     ids: { date: string; id: string }[];
-  }[]>([]);
+  }[]>(analyticsViewCache.feedbackResults);
   const [complianceResults, setComplianceResults] = useState<{
     domain: string;
     rows: { requirement: string; status: string }[];
@@ -78,92 +114,178 @@ export default function AnalyticsClient() {
     honor: string;
     deliverability: string;
     reason: string;
-  }[]>([]);
-  const [failures, setFailures] = useState<string[]>([]);
+  }[]>(analyticsViewCache.complianceResults);
+  const [failures, setFailures] = useState<string[]>(analyticsViewCache.failures);
   const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState("");
+  const runnerRef = useRef<{
+    pause: () => void;
+    resume: () => void;
+    cancel: () => void;
+  } | null>(null);
 
+  const cancelledRef = useRef(false);
+  const [runState, setRunState] = useState<
+    "idle" | "running" | "paused" | "completed" | "cancelled"
+  >("idle");
+
+  const [runProgress, setRunProgress] = useState({
+    completed: 0,
+    total: 0,
+    successful: 0,
+    failed: 0,
+  });
+
+  const [progress, setProgress] = useState(analyticsViewCache.progress);
+
+  useEffect(() => {
+    analyticsViewCache = {
+      input,
+      days,
+      selectedMetrics,
+      includeZeroErrors,
+      rows,
+      failures,
+      complianceResults,
+      feedbackResults,
+      detailFilters,
+      activeDetailFilter,
+      progress,
+    };
+  }, [
+    input, days, selectedMetrics, includeZeroErrors,
+    rows, failures, complianceResults, feedbackResults,
+    detailFilters, activeDetailFilter, progress,
+  ]);
   const domains = [...new Set(
     input.split(/[\s,;]+/).map(x => x.trim().toLowerCase()).filter(Boolean)
   )];
 
   async function analyze() {
-    if (loading || !domains.length) return;
+    if (loading || !domains.length || !selectedMetrics.length) return;
 
+    const requestedDomains = [...domains];
+    const requestedMetrics = [...selectedMetrics];
+    const requestedDays = days;
+
+    cancelledRef.current = false;
+    setRunState("running");
     setLoading(true);
     setRows([]);
     setFeedbackResults([]);
     setComplianceResults([]);
     setFailures([]);
+    setErrorDetails(null);
 
-    const collected: Row[] = [];
-    const failed: string[] = [];
+    setRunProgress({
+      completed: 0,
+      total: requestedDomains.length,
+      successful: 0,
+      failed: 0,
+    });
 
-    for (let i = 0; i < domains.length; i++) {
-      const domain = domains[i];
-      setProgress(`${i + 1}/${domains.length} - ${domain}`);
+    setProgress(`0/${requestedDomains.length} completed`);
 
-      try {
-        if (selectedMetrics.some(x => ["spam", "auth", "tls", "delivery", "feedback"].includes(x))) {
-        const response = await fetch("/api/analytics", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ domain, days, categories: selectedMetrics }),
-        });
+    type Outcome = {
+      rows: Row[];
+      feedback?: FeedbackCache;
+      compliance?: ComplianceCache;
+      issues: string[];
+    };
 
-        const data = await response.json();
+    async function processDomain(
+      domain: string,
+      signal: AbortSignal
+    ): Promise<Outcome> {
+      const outcome: Outcome = { rows: [], issues: [] };
+      let succeeded = false;
 
-        if (!response.ok) {
-          throw new Error(data.error || "API error");
-        }
-
-        if (selectedMetrics.includes("feedback")) {
-          const feedbackIds = ((data.stats || []) as Stat[])
-            .filter(s => s.metric === "feedback_loop_id")
-            .map(s => ({
-              date: s.date
-                ? `${s.date.year}-${String(s.date.month).padStart(2, "0")}-${String(s.date.day).padStart(2, "0")}`
-                : "N/A",
-              id: (s.value as { stringValue?: string } | undefined)?.stringValue ?? "",
-            }))
-            .filter(s => s.id.length > 0);
-
-          setFeedbackResults(prev => [
-            ...prev,
-            { domain, ids: feedbackIds },
-          ]);
-        }
-        for (const stat of (data.stats || []) as Stat[]) {
-          if (stat.metric === "feedback_loop_id") continue;
-          const d = stat.date;
-
-          collected.push({
-            domain,
-            date: d
-              ? `${d.year}-${String(d.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}`
-              : "N/A",
-            metric: stat.metric || "Unknown",
-            value: formatValue(stat),
-          });
-        }
-        }
-
-        if (selectedMetrics.includes("compliance")) {
-          const res = await fetch(
-            `/api/analytics-compliance?domain=${encodeURIComponent(domain)}`
+      if (requestedMetrics.some(x =>
+        ["spam", "auth", "tls", "tls_count", "delivery", "feedback"].includes(x)
+      )) {
+        try {
+          const response = await fetchWithRetry(
+            "/api/analytics",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                domain,
+                days: requestedDays,
+                categories: requestedMetrics,
+              }),
+              signal,
+            }
           );
-          const json = await res.json();
 
-          if (!res.ok) {
-            throw new Error(json.error || "Compliance API failed");
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data.error || `HTTP ${response.status}`);
+          }
+
+          succeeded = true;
+          const stats = (data.stats || []) as Stat[];
+
+          if (requestedMetrics.includes("feedback")) {
+            const ids = stats
+              .filter(s => s.metric === "feedback_loop_id")
+              .map(s => ({
+                date: s.date
+                  ? `${s.date.year}-${String(s.date.month).padStart(2, "0")}-${String(s.date.day).padStart(2, "0")}`
+                  : "N/A",
+                id: (s.value as { stringValue?: string } | undefined)
+                  ?.stringValue ?? "",
+              }))
+              .filter(s => s.id.length > 0);
+
+            outcome.feedback = { domain, ids };
+          }
+
+          for (const stat of stats) {
+            if (stat.metric === "feedback_loop_id") continue;
+
+            const d = stat.date;
+
+            outcome.rows.push({
+              domain,
+              date: d
+                ? `${d.year}-${String(d.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}`
+                : "N/A",
+              metric: stat.metric || "Unknown",
+              value: formatValue(stat),
+            });
+          }
+        } catch (error) {
+          if (signal.aborted) throw error;
+          outcome.issues.push(
+            "Statistics: " +
+            (error instanceof Error ? error.message : "Failed")
+          );
+        }
+      }
+
+      if (requestedMetrics.includes("compliance")) {
+        try {
+          const response = await fetchWithRetry(
+            `/api/analytics-compliance?domain=${encodeURIComponent(domain)}`,
+            { signal }
+          );
+
+          const json = await response.json();
+
+          if (!response.ok) {
+            throw new Error(json.error || `HTTP ${response.status}`);
           }
 
           const info = json.compliance?.complianceData;
+
           if (!info) {
             throw new Error("Compliance data unavailable");
           }
 
-          setComplianceResults(prev => [...prev, {
+          succeeded = true;
+
+          outcome.compliance = {
             domain,
             rows: (info.rowData || []).map((r: {
               requirement: string;
@@ -172,24 +294,101 @@ export default function AnalyticsClient() {
               requirement: r.requirement,
               status: r.status?.status || "N/A",
             })),
-            oneClick: info.oneClickUnsubscribeVerdict?.status?.status || "N/A",
-            honor: info.honorUnsubscribeVerdict?.status?.status || "N/A",
-            deliverability: info.deliverabilityStatusVerdict?.state?.status || "N/A",
-            reason: info.deliverabilityStatusVerdict?.reason || "",
-          }]);
+            oneClick:
+              info.oneClickUnsubscribeVerdict?.status?.status || "N/A",
+            honor:
+              info.honorUnsubscribeVerdict?.status?.status || "N/A",
+            deliverability:
+              info.deliverabilityStatusVerdict?.state?.status || "N/A",
+            reason:
+              info.deliverabilityStatusVerdict?.reason || "",
+          };
+        } catch (error) {
+          if (signal.aborted) throw error;
+          outcome.issues.push(
+            "Compliance: " +
+            (error instanceof Error ? error.message : "Failed")
+          );
         }
-      } catch (error) {
-        failed.push(`${domain}: ${error instanceof Error ? error.message : "Failed"}`);
       }
 
-      setRows([...collected]);
-      setFailures([...failed]);
+      if (!succeeded) {
+        throw new Error(outcome.issues.join(" | ") || "Request failed");
+      }
+
+      return outcome;
     }
 
-    setProgress("Completed");
-    setLoading(false);
+    const runner = createAnalysisRunner<Outcome>(
+      requestedDomains,
+      processDomain,
+      result => {
+        if (result.error) {
+          setFailures(prev => [
+            ...prev,
+            `${result.item}: ${result.error}`,
+          ]);
+          return;
+        }
+
+        const data = result.data;
+        if (!data) return;
+
+        if (data.rows.length) {
+          setRows(prev => [...prev, ...data.rows]);
+        }
+
+        if (data.feedback) {
+          setFeedbackResults(prev => [...prev, data.feedback!]);
+        }
+
+        if (data.compliance) {
+          setComplianceResults(prev => [...prev, data.compliance!]);
+        }
+
+        if (data.issues.length) {
+          setFailures(prev => [
+            ...prev,
+            `${result.item}: ${data.issues.join(" | ")}`,
+          ]);
+        }
+      },
+      status => {
+        setRunProgress(status);
+        setProgress(
+          `${status.completed}/${status.total} completed`
+        );
+      },
+      3
+    );
+
+    runnerRef.current = runner;
+
+    try {
+      await runner.start();
+      setRunState(cancelledRef.current ? "cancelled" : "completed");
+      setProgress(cancelledRef.current ? "Cancelled" : "Completed");
+    } finally {
+      runnerRef.current = null;
+      setLoading(false);
+    }
   }
 
+  function pauseAnalysis() {
+    runnerRef.current?.pause();
+    setRunState("paused");
+  }
+
+  function resumeAnalysis() {
+    runnerRef.current?.resume();
+    setRunState("running");
+  }
+
+  function cancelAnalysis() {
+    cancelledRef.current = true;
+    runnerRef.current?.cancel();
+    setRunState("cancelled");
+  }
   function exportFile(format: "csv" | "errors" | "json" | "compliance" | "feedback") {
     if (format === "compliance") {
       downloadComplianceCSV(complianceResults);
@@ -204,7 +403,7 @@ export default function AnalyticsClient() {
 
   return (
     <div className="p-4 text-slate-100 lg:p-6">
-      <div className="mx-auto max-w-7xl space-y-6">
+      <div className="w-full min-w-0 space-y-6">
         
 
         <section className="grid gap-5 lg:grid-cols-[2fr_1fr]">
@@ -262,6 +461,58 @@ export default function AnalyticsClient() {
             >
               {loading ? "Analyzing..." : "Analyze Domains"}
             </button>
+              {loading && (
+                <div className="mt-4 space-y-3">
+                  <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className="h-full rounded-full bg-indigo-500 transition-all"
+                      style={{
+                        width: `${runProgress.total
+                          ? Math.round(
+                              runProgress.completed / runProgress.total * 100
+                            )
+                          : 0}%`,
+                      }}
+                    />
+                  </div>
+
+                  <p className="text-xs text-slate-300">
+                    {runProgress.completed}/{runProgress.total} completed
+                    {" | "}
+                    {runProgress.successful} successful
+                    {" | "}
+                    {runProgress.failed} failed
+                  </p>
+
+                  <div className="flex flex-wrap gap-2">
+                    {runState === "running" ? (
+                      <button
+                        type="button"
+                        onClick={pauseAnalysis}
+                        className="rounded-lg border border-white/20 px-4 py-2 text-sm"
+                      >
+                        Pause
+                      </button>
+                    ) : runState === "paused" ? (
+                      <button
+                        type="button"
+                        onClick={resumeAnalysis}
+                        className="rounded-lg bg-indigo-600 px-4 py-2 text-sm"
+                      >
+                        Resume
+                      </button>
+                    ) : null}
+
+                    <button
+                      type="button"
+                      onClick={cancelAnalysis}
+                      className="rounded-lg border border-rose-500/40 px-4 py-2 text-sm text-rose-300"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             <p className="mt-3 text-xs text-slate-400">{progress}</p>
           </div>
         </section>
@@ -308,7 +559,20 @@ export default function AnalyticsClient() {
             </div>
           </div>
 
-                    {(() => {
+                    <DomainsOverview
+            rows={rows}
+            complianceResults={complianceResults}
+            feedbackResults={feedbackResults}
+            failures={failures}
+            selectedMetrics={selectedMetrics}
+          />
+
+          <details className="mt-5 rounded-xl border border-white/10 p-4">
+            <summary className="cursor-pointer font-medium text-indigo-300">
+              Advanced Details - Daily Statistics / Compliance / Feedback
+            </summary>
+            <div className="mt-4 space-y-5">
+          {(() => {
             const definitions: { key: string; label: string; group: string }[] = [
               { key: "spam", label: "Spam Rate", group: "spam" },
               { key: "spf", label: "SPF", group: "auth" },
@@ -316,6 +580,8 @@ export default function AnalyticsClient() {
               { key: "dmarc", label: "DMARC", group: "auth" },
               { key: "tls_inbound", label: "TLS Inbound", group: "tls" },
               { key: "tls_outbound", label: "TLS Outbound", group: "tls" },
+              { key: "count_tls_inbound", label: "TLS In Count", group: "tls_count" },
+              { key: "count_tls_outbound", label: "TLS Out Count", group: "tls_count" },
             ];
 
             const columns = definitions.filter(x =>
@@ -361,25 +627,236 @@ export default function AnalyticsClient() {
                 b.date.localeCompare(a.date)
             );
 
+            const percentageRanges = (key: string, value: string) => {
+              const selected = (detailFilters[key] || "")
+                .split(",")
+                .filter(Boolean);
+
+              if (!selected.length) return true;
+
+              const number = Number.parseFloat(value);
+              if (!Number.isFinite(number)) return false;
+
+              return selected.some(range => {
+                const [min, max] = range.split("-").map(Number);
+                return number >= min &&
+                  (number < max || (max === 100 && number <= 100));
+              });
+            };
+
+            const toggleRange = (key: string, range: string) => {
+              const current = (detailFilters[key] || "")
+                .split(",").filter(Boolean);
+              const next = current.includes(range)
+                ? current.filter(x => x !== range)
+                : [...current, range];
+              updateDetailFilter(key, next.join(","));
+            };
+
+            const filteredData = data.filter(entry => {
+              if (!entry.domain.toLowerCase().includes(
+                (detailFilters.domain || "").trim().toLowerCase()
+              )) return false;
+
+              const mode = detailFilters.dateMode || "range";
+
+              if (mode === "single") {
+                if (detailFilters.dateSingle &&
+                    entry.date !== detailFilters.dateSingle) return false;
+              } else {
+                if (detailFilters.dateFrom &&
+                    entry.date < detailFilters.dateFrom) return false;
+                if (detailFilters.dateTo &&
+                    entry.date > detailFilters.dateTo) return false;
+              }
+
+              if (!columns.every(col =>
+                percentageRanges(col.key, entry.metrics[col.key] ?? "N/A")
+              )) return false;
+
+              const errorFilter = detailFilters.errors || "all";
+              const active = entry.errors.some(
+                e => Number.parseFloat(e.value) > 0
+              );
+
+              if (errorFilter === "active" && !active) return false;
+              if (errorFilter === "clear" && active) return false;
+
+              return true;
+            });
             return (
               <div className="max-h-[550px] overflow-auto rounded-xl border border-white/10">
                 <table className="w-full min-w-[650px] text-left text-sm">
                   <thead className="sticky top-0 z-10 bg-[#253247] text-slate-300">
-                    <tr>
-                      <th className="whitespace-nowrap p-3">Domain</th>
-                      <th className="whitespace-nowrap p-3">Date</th>
-                      {columns.map(col => (
-                        <th key={col.key} className="whitespace-nowrap p-3">
-                          {col.label}
-                        </th>
-                      ))}
-                      {selectedMetrics.includes("delivery") && (
-                        <th className="whitespace-nowrap p-3">Delivery Errors</th>
-                      )}
-                    </tr>
-                  </thead>
+  <tr>
+    {[
+      { key: "domain", label: "Domain" },
+      { key: "date", label: "Date" },
+      ...columns,
+      ...(selectedMetrics.includes("delivery")
+        ? [{ key: "errors", label: "Delivery Errors" }]
+        : []),
+    ].map(col => (
+      <th key={col.key} className="whitespace-nowrap p-3">
+        <button
+          type="button"
+          onClick={() => setActiveDetailFilter(
+            activeDetailFilter === col.key ? "" : col.key
+          )}
+          className="flex items-center gap-2 text-left hover:text-white"
+        >
+          {col.label}
+          <span className={
+            detailFilters[col.key] ||
+            (col.key === "date" && (
+              detailFilters.dateSingle ||
+              detailFilters.dateFrom ||
+              detailFilters.dateTo
+            ))
+              ? "text-indigo-300" : "text-slate-400"
+          }>
+            {activeDetailFilter === col.key ? "▲" : "▼"}
+          </span>
+        </button>
+      </th>
+    ))}
+  </tr>
+
+  {activeDetailFilter && (
+    <tr className="border-t border-white/10 bg-[#1d2a3d]">
+      <th
+        colSpan={2 + columns.length +
+          (selectedMetrics.includes("delivery") ? 1 : 0)}
+        className="p-3 text-left font-normal"
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm font-semibold text-white">
+            Filter: {activeDetailFilter.replace(/_/g, " ")}
+          </span>
+
+          {activeDetailFilter === "domain" && (
+            <input
+              value={detailFilters.domain || ""}
+              onChange={e => updateDetailFilter("domain", e.target.value)}
+              placeholder="Search domain..."
+              className="rounded-lg border border-white/10 bg-[#101b2a] px-3 py-2 text-sm text-white"
+            />
+          )}
+
+          {activeDetailFilter === "date" && (
+            <>
+              <select
+                value={detailFilters.dateMode || "range"}
+                onChange={e => updateDetailFilter("dateMode", e.target.value)}
+                className="rounded-lg border border-white/10 bg-[#101b2a] p-2 text-sm"
+              >
+                <option value="single">Single Day</option>
+                <option value="range">Date Range</option>
+              </select>
+
+              {(detailFilters.dateMode || "range") === "single" ? (
+                <input
+                  type="date"
+                  value={detailFilters.dateSingle || ""}
+                  onChange={e => updateDetailFilter("dateSingle", e.target.value)}
+                  className="rounded-lg border border-white/10 bg-[#101b2a] p-2 text-sm"
+                />
+              ) : (
+                <>
+                  <label className="text-xs">From</label>
+                  <input
+                    type="date"
+                    value={detailFilters.dateFrom || ""}
+                    onChange={e => updateDetailFilter("dateFrom", e.target.value)}
+                    className="rounded-lg border border-white/10 bg-[#101b2a] p-2 text-sm"
+                  />
+                  <label className="text-xs">To</label>
+                  <input
+                    type="date"
+                    value={detailFilters.dateTo || ""}
+                    onChange={e => updateDetailFilter("dateTo", e.target.value)}
+                    className="rounded-lg border border-white/10 bg-[#101b2a] p-2 text-sm"
+                  />
+                </>
+              )}
+            </>
+          )}
+
+          {columns.some(col => col.key === activeDetailFilter && col.group !== "tls_count") && (
+            <>
+              <label className="flex cursor-pointer items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={!detailFilters[activeDetailFilter]}
+                  onChange={() => updateDetailFilter(activeDetailFilter, "")}
+                  className="accent-indigo-500"
+                />
+                All
+              </label>
+
+              {(activeDetailFilter === "spam"
+                ? ["0-5", "5-10", "10-20", "20-30", "30-50", "50-100"]
+                : ["0-25", "25-50", "50-75", "75-100"]
+              ).map(range => (
+                <label
+                  key={range}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs"
+                >
+                  <input
+                    type="checkbox"
+                    checked={(detailFilters[activeDetailFilter] || "")
+                      .split(",").includes(range)}
+                    onChange={() => toggleRange(activeDetailFilter, range)}
+                    className="accent-indigo-500"
+                  />
+                  {range}%
+                </label>
+              ))}
+            </>
+          )}
+
+          {activeDetailFilter === "errors" && (
+            <select
+              value={detailFilters.errors || "all"}
+              onChange={e => updateDetailFilter("errors", e.target.value)}
+              className="rounded-lg border border-white/10 bg-[#101b2a] p-2 text-sm"
+            >
+              <option value="all">All Errors</option>
+              <option value="active">Active Only</option>
+              <option value="clear">No Active Errors</option>
+            </select>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              if (activeDetailFilter === "date") {
+                ["dateSingle", "dateFrom", "dateTo"].forEach(
+                  key => updateDetailFilter(key, "")
+                );
+              } else {
+                updateDetailFilter(activeDetailFilter, "");
+              }
+            }}
+            className="rounded-lg border border-white/10 px-3 py-2 text-xs"
+          >
+            Clear
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveDetailFilter("")}
+            className="rounded-lg bg-indigo-600 px-3 py-2 text-xs text-white"
+          >
+            Done
+          </button>
+        </div>
+      </th>
+    </tr>
+  )}
+</thead>
                   <tbody>
-                    {data.map((entry, index) => {
+                    {filteredData.map((entry, index) => {
                       const active = entry.errors.filter(
                         e => Number.parseFloat(e.value) > 0
                       );
@@ -389,6 +866,7 @@ export default function AnalyticsClient() {
                           key={JSON.stringify([entry.domain, entry.date])}
                           className={
                             "border-t border-white/5 hover:bg-white/5 " +
+(index > 0 && filteredData[index - 1].domain !== entry.domain ? "border-t-[4px] !border-indigo-400/60 " : "") +
                             (index % 2 ? "bg-white/[0.02]" : "")
                           }
                         >
@@ -639,6 +1117,8 @@ export default function AnalyticsClient() {
               )}
             </div>
           )}
+            </div>
+          </details>
           {failures.length > 0 && (
             <div className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/5 p-4">
               <h3 className="mb-2 text-sm font-semibold text-rose-300">Errors</h3>

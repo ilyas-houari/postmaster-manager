@@ -20,6 +20,11 @@ const errors = {
 
 const allMetrics = [
   { name: "spam", baseMetric: { standardMetric: "SPAM_RATE" } },
+  ...["inbound", "outbound"].map(direction => ({
+    name: `count_tls_${direction}`,
+    baseMetric: { standardMetric: "TLS_ENCRYPTION_MESSAGE_COUNT" },
+    filter: `traffic_direction = "${direction}"`,
+  })),
   { name: "feedback_loop_id", baseMetric: { standardMetric: "FEEDBACK_LOOP_ID" } },
   ...["inbound", "outbound"].flatMap(direction => [
     { name: `tls_${direction}`, baseMetric: { standardMetric: "TLS_ENCRYPTION_RATE" }, filter: `traffic_direction = "${direction}"` },
@@ -68,18 +73,12 @@ export async function POST(req: NextRequest) {
       ? input.categories.filter((x: unknown): x is string => typeof x === "string")
       : ["auth", "delivery"];
 
-    if (selected.some(x => ["compliance"].includes(x))) {
-      return NextResponse.json(
-        { error: "Compliance and Feedback Loop integration is coming next." },
-        { status: 400 }
-      );
-    }
-
     const metrics = allMetrics.filter(item =>
       (item.name === "spam" && selected.includes("spam")) ||
+      (item.name.startsWith("count_tls_") && selected.includes("tls_count")) ||
       (item.name === "feedback_loop_id" && selected.includes("feedback")) ||
       (["spf", "dkim", "dmarc"].includes(item.name) && selected.includes("auth")) ||
-      (item.name.startsWith("tls_") && selected.includes("tls")) ||
+      ((item.name.startsWith("tls_")) && selected.includes("tls")) ||
       (item.name.startsWith("error_") && selected.includes("delivery"))
     );
 
