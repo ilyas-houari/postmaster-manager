@@ -45,6 +45,8 @@ export default function DomainsOverview({
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState("attention");
+  const [spamFilter, setSpamFilter] = useState("all");
+  const [errorFilter, setErrorFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -115,7 +117,20 @@ export default function DomainsOverview({
       }
       return true;
     })
+    .filter(d => {
+      if (!selectedMetrics.includes("spam") || spamFilter === "all") return true;
+      const v = Number.parseFloat(d.metrics.spam ?? "");
+      if (!Number.isFinite(v)) return false;
+      return spamFilter === "gte5" ? v >= 5 : spamFilter === "gte10" ? v >= 10 : v < 5;
+    })
+    .filter(d => {
+      if (!selectedMetrics.includes("delivery") || errorFilter === "all") return true;
+      return errorFilter === "active" ? d.activeErrors.length > 0 : d.activeErrors.length === 0;
+    })
     .sort((a, b) => {
+      if (sort === "spam") {
+        return (Number.parseFloat(b.metrics.spam || "") || 0) - (Number.parseFloat(a.metrics.spam || "") || 0) || a.domain.localeCompare(b.domain);
+      }
       if (sort === "errors") {
         return b.activeErrors.length - a.activeErrors.length ||
           a.domain.localeCompare(b.domain);
@@ -190,11 +205,27 @@ export default function DomainsOverview({
           <option value="attention">Attention First</option>
           <option value="domain">Domain A-Z</option>
           <option value="errors">Most Errors</option>
+          {selectedMetrics.includes("spam") && <option value="spam">Highest Spam Rate</option>}
         </select>
+        {selectedMetrics.includes("spam") && <select aria-label="Spam rate filter"
+          value={spamFilter} onChange={e => {setSpamFilter(e.target.value); setPage(1);}}
+          className="rounded-lg border border-white/10 bg-[#101b2a] px-3 py-2 text-sm">
+          <option value="all">Any Spam Rate</option>
+          <option value="lt5">Spam below 5%</option>
+          <option value="gte5">Spam 5%+</option>
+          <option value="gte10">Spam 10%+</option>
+        </select>}
+        {selectedMetrics.includes("delivery") && <select aria-label="Delivery error filter"
+          value={errorFilter} onChange={e => {setErrorFilter(e.target.value); setPage(1);}}
+          className="rounded-lg border border-white/10 bg-[#101b2a] px-3 py-2 text-sm">
+          <option value="all">All Error Levels</option>
+          <option value="active">Active Errors</option>
+          <option value="clear">No Active Errors</option>
+        </select>}
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-white/10">
-        <table className="w-full min-w-[760px] text-left text-sm">
+        <table className="w-full min-w-[360px] text-left text-xs sm:text-sm">
           <thead className="bg-[#253247] text-slate-300">
             <tr>
               <th className="p-3">Domain</th>
@@ -324,15 +355,26 @@ export default function DomainsOverview({
           </p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {[
-              ["Spam Rate", value(current, "spam")],
-              ["SPF", value(current, "spf")],
-              ["DKIM", value(current, "dkim")],
-              ["DMARC", value(current, "dmarc")],
-              ["TLS Inbound", value(current, "tls_inbound")],
-              ["TLS Outbound", value(current, "tls_outbound")],
-              ["Feedback IDs", current.feedback?.ids.length ?? "N/A"],
-              ["Deliverability", status(current).replace(/_/g, " ")],
-              ["Reason", current.compliance?.reason.replace(/_/g, " ") || "N/A"],
+              ...(selectedMetrics.includes("spam") ? [["Spam Rate", value(current, "spam")]] : []),
+              ...(selectedMetrics.includes("auth") ? [
+                ["SPF", value(current, "spf")], ["DKIM", value(current, "dkim")],
+                ["DMARC", value(current, "dmarc")],
+              ] : []),
+              ...(selectedMetrics.includes("tls") ? [
+                ["TLS Inbound", value(current, "tls_inbound")],
+                ["TLS Outbound", value(current, "tls_outbound")],
+              ] : []),
+              ...(selectedMetrics.includes("tls_count") ? [
+                ["TLS In Count", value(current, "count_tls_inbound")],
+                ["TLS Out Count", value(current, "count_tls_outbound")],
+              ] : []),
+              ...(selectedMetrics.includes("feedback") ? [
+                ["Feedback IDs", current.feedback?.ids.length ?? "N/A"],
+              ] : []),
+              ...(selectedMetrics.includes("compliance") ? [
+                ["Deliverability", status(current).replace(/_/g, " ")],
+                ["Reason", current.compliance?.reason.replace(/_/g, " ") || "N/A"],
+              ] : []),
             ].map(([label, result]) => (
               <div key={label} className="rounded-lg border border-white/10 p-3">
                 <p className="text-xs text-slate-400">{label}</p>

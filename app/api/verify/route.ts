@@ -1,4 +1,5 @@
-﻿import { hasAppAccess } from "@/lib/access";
+import { getDomain } from "tldts";
+import { hasAppAccess } from "@/lib/access";
 import { NextRequest, NextResponse } from "next/server";
 import { getGoogleToken } from "@/lib/google-token";
 
@@ -86,7 +87,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         status: "TXT READY",
         domain,
-        record: `${domain},${domain},TXT,${data.token}`,
+        record: `${getDomain(domain) || domain},${domain},TXT,${data.token}`,
       });
     }
 

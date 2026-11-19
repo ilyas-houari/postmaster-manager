@@ -1,4 +1,6 @@
-﻿export const metadata = {
+import Link from "next/link";
+
+export const metadata = {
   title: "Privacy Policy | Postmaster Manager",
 };
 
@@ -7,9 +9,9 @@ export default function PrivacyPage() {
     <main className="min-h-screen bg-[#0b1120] px-5 py-12 text-slate-200">
       <article className="mx-auto max-w-3xl space-y-8">
         <header className="border-b border-white/10 pb-8">
-          <a href="/" className="text-sm text-indigo-400 hover:text-indigo-300">
+          <Link href="/" className="text-sm text-indigo-400 hover:text-indigo-300">
             ← Back to Postmaster Manager
-          </a>
+          </Link>
           <h1 className="mt-6 text-4xl font-bold text-white">Privacy Policy</h1>
           <p className="mt-3 text-sm text-slate-400">
             Last updated: November 13, 2026

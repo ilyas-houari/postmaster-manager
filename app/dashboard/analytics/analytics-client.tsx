@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import DomainsOverview from "./domains-overview";
 import { createAnalysisRunner, fetchWithRetry } from "./analysis-runner";
 import { downloadReport, downloadComplianceCSV, downloadFeedbackCSV } from "./export-utils";
+import { downloadWorkbook } from "./excel-export";
 
 type Stat = {
   metric?: string;
@@ -36,9 +37,25 @@ type FeedbackCache = {
   ids: { date: string; id: string }[];
 };
 
-// Memory lasts only while the page is open.
+type SavedReport = {
+  id: string;
+  title: string;
+  savedAt: string;
+  input: string;
+  days: number;
+  selectedMetrics: string[];
+  includeZeroErrors: boolean;
+  rows: Row[];
+  failures: string[];
+  complianceResults: ComplianceCache[];
+  feedbackResults: FeedbackCache[];
+};
+
+
+// Cache is scoped to the authenticated account and only lasts while this page is open.
 // A full browser refresh clears this cache.
 let analyticsViewCache = {
+  ownerEmail: "",
   input: "",
   days: 7,
   selectedMetrics: ["spam", "auth", "delivery"] as string[],
@@ -64,15 +81,65 @@ function formatValue(stat: Stat) {
   return "N/A";
 }
 
-function csvEscape(value: string) {
-  return '"' + value.replace(/"/g, '""') + '"';
+// Resolve the signed-in Google account before displaying any cached analytics.
+// This also works when AnalyticsClient is mounted by an existing page without props.
+export default function AnalyticsClient() {
+  const [accountEmail, setAccountEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const checkAccount = async () => {
+      try {
+        const response = await fetch("/api/auth/session", { cache: "no-store" });
+        if (!response.ok) throw new Error("Session unavailable");
+        const session: { user?: { email?: string | null } } = await response.json();
+        const email = session.user?.email?.trim().toLowerCase() || "";
+        if (mounted) setAccountEmail(email);
+      } catch {
+        if (mounted) setAccountEmail("");
+      }
+    };
+    void checkAccount();
+    window.addEventListener("focus", checkAccount);
+    return () => {
+      mounted = false;
+      window.removeEventListener("focus", checkAccount);
+    };
+  }, []);
+
+  if (accountEmail === null) {
+    return <div className="p-6 text-slate-300">Checking Google account...</div>;
+  }
+  if (!accountEmail) {
+    return <div className="p-6 text-amber-300">Google session unavailable. Please sign in again.</div>;
+  }
+  return <AnalyticsClientForAccount key={accountEmail} accountEmail={accountEmail} />;
 }
 
-export default function AnalyticsClient() {
-  const [input, setInput] = useState(analyticsViewCache.input);
-  const [includeZeroErrors, setIncludeZeroErrors] = useState(analyticsViewCache.includeZeroErrors);
-  const [detailFilters, setDetailFilters] = useState<Record<string, string>>(analyticsViewCache.detailFilters);
-  const [activeDetailFilter, setActiveDetailFilter] = useState(analyticsViewCache.activeDetailFilter);
+function AnalyticsClientForAccount({ accountEmail }: { accountEmail: string }) {
+  const normalizedEmail = accountEmail.trim().toLowerCase();
+  // Never mutate the shared cache while rendering a React component.
+  // A different account starts from an empty snapshot, not another user's data.
+  const initialCache = analyticsViewCache.ownerEmail === normalizedEmail
+    ? analyticsViewCache
+    : {
+        ownerEmail: normalizedEmail,
+        input: "",
+        days: 7,
+        selectedMetrics: ["spam", "auth", "delivery"] as string[],
+        includeZeroErrors: true,
+        rows: [] as Row[],
+        failures: [] as string[],
+        complianceResults: [] as ComplianceCache[],
+        feedbackResults: [] as FeedbackCache[],
+        detailFilters: {} as Record<string, string>,
+        activeDetailFilter: "",
+        progress: "",
+      };
+  const [input, setInput] = useState(initialCache.input);
+  const [includeZeroErrors, setIncludeZeroErrors] = useState(initialCache.includeZeroErrors);
+  const [detailFilters, setDetailFilters] = useState<Record<string, string>>(initialCache.detailFilters);
+  const [activeDetailFilter, setActiveDetailFilter] = useState(initialCache.activeDetailFilter);
 
   function updateDetailFilter(key: string, value: string) {
     setDetailFilters(prev => ({ ...prev, [key]: value }));
@@ -92,7 +159,7 @@ export default function AnalyticsClient() {
     { id: "feedback", label: "Feedback Loop" },
   ];
 
-  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(analyticsViewCache.selectedMetrics);
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(initialCache.selectedMetrics);
 
   function toggleMetric(id: string) {
     setSelectedMetrics(prev =>
@@ -101,8 +168,8 @@ export default function AnalyticsClient() {
         : [...prev, id]
     );
   }
-  const [days, setDays] = useState(analyticsViewCache.days);
-  const [rows, setRows] = useState<Row[]>(analyticsViewCache.rows);
+  const [days, setDays] = useState(initialCache.days);
+  const [rows, setRows] = useState<Row[]>(initialCache.rows);
   const [feedbackResults, setFeedbackResults] = useState<{
     domain: string;
     ids: { date: string; id: string }[];
@@ -115,7 +182,7 @@ export default function AnalyticsClient() {
     deliverability: string;
     reason: string;
   }[]>(analyticsViewCache.complianceResults);
-  const [failures, setFailures] = useState<string[]>(analyticsViewCache.failures);
+  const [failures, setFailures] = useState<string[]>(initialCache.failures);
   const [loading, setLoading] = useState(false);
   const runnerRef = useRef<{
     pause: () => void;
@@ -135,10 +202,77 @@ export default function AnalyticsClient() {
     failed: 0,
   });
 
-  const [progress, setProgress] = useState(analyticsViewCache.progress);
+  const [progress, setProgress] = useState(initialCache.progress);
+  const [savedReports, setSavedReports] = useState<SavedReport[]>([]);
+  const [reportMessage, setReportMessage] = useState("");
+  const reportStorageKey = `postmaster-analytics-reports-v1:${normalizedEmail}`;
+
+  useEffect(() => {
+    // Read browser-only storage after mount; defer state update to avoid
+    // synchronous effect updates and keep server hydration predictable.
+    const task = window.setTimeout(() => {
+      try {
+        const value: unknown = JSON.parse(sessionStorage.getItem(reportStorageKey) || "[]");
+        if (Array.isArray(value)) {
+          setSavedReports(value.filter((r): r is SavedReport =>
+            !!r && typeof r === "object" &&
+            typeof r.id === "string" && typeof r.input === "string" &&
+            Array.isArray(r.rows) && Array.isArray(r.selectedMetrics) &&
+            Array.isArray(r.failures) && Array.isArray(r.complianceResults) &&
+            Array.isArray(r.feedbackResults)
+          ).slice(0, 5));
+        }
+      } catch {
+        setSavedReports([]);
+      }
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, [reportStorageKey]);
+
+  function persistReports(next: SavedReport[]) {
+    try {
+      sessionStorage.setItem(reportStorageKey, JSON.stringify(next));
+      setSavedReports(next);
+      setReportMessage("Reports saved for this browser tab only.");
+    } catch {
+      setReportMessage("Browser storage full or unavailable. Export JSON instead.");
+    }
+  }
+
+  function saveCurrentReport() {
+    if (loading || (!rows.length && !complianceResults.length && !feedbackResults.length && !failures.length)) return;
+    const now = new Date();
+    const title = `${now.toLocaleString()} - ${domains.length} domain(s)`;
+    const report: SavedReport = {
+      id: `${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
+      title, savedAt: now.toISOString(), input, days, selectedMetrics: [...selectedMetrics],
+      includeZeroErrors, rows: [...rows], failures: [...failures],
+      complianceResults: [...complianceResults], feedbackResults: [...feedbackResults],
+    };
+    persistReports([report, ...savedReports].slice(0, 5));
+  }
+
+  function loadSavedReport(id: string) {
+    if (loading) return;
+    const report = savedReports.find(r => r.id === id);
+    if (!report) return;
+    setInput(report.input);
+    setDays(report.days);
+    setSelectedMetrics([...report.selectedMetrics]);
+    setIncludeZeroErrors(report.includeZeroErrors);
+    setRows([...report.rows]); setFailures([...report.failures]);
+    setComplianceResults([...report.complianceResults]);
+    setFeedbackResults([...report.feedbackResults]);
+    setDetailFilters({}); setActiveDetailFilter(""); setErrorDetails(null);
+    setRunState("idle"); setRunProgress({completed: 0, total: 0, successful: 0, failed: 0});
+    setProgress(`Restored: ${report.title}`);
+    setReportMessage("Report restored without Google API requests.");
+  }
+
 
   useEffect(() => {
     analyticsViewCache = {
+      ownerEmail: normalizedEmail,
       input,
       days,
       selectedMetrics,
@@ -154,7 +288,7 @@ export default function AnalyticsClient() {
   }, [
     input, days, selectedMetrics, includeZeroErrors,
     rows, failures, complianceResults, feedbackResults,
-    detailFilters, activeDetailFilter, progress,
+    detailFilters, activeDetailFilter, progress, normalizedEmail,
   ]);
   const domains = [...new Set(
     input.split(/[\s,;]+/).map(x => x.trim().toLowerCase()).filter(Boolean)
@@ -389,6 +523,16 @@ export default function AnalyticsClient() {
     runnerRef.current?.cancel();
     setRunState("cancelled");
   }
+  async function exportExcel() {
+    if (loading) return;
+    try {
+      await downloadWorkbook(rows, failures, selectedMetrics, includeZeroErrors, complianceResults, feedbackResults);
+      setReportMessage("Excel report exported.");
+    } catch (error) {
+      setReportMessage(error instanceof Error ? `Excel export failed: ${error.message}` : "Excel export failed");
+    }
+  }
+
   function exportFile(format: "csv" | "errors" | "json" | "compliance" | "feedback") {
     if (format === "compliance") {
       downloadComplianceCSV(complianceResults);
@@ -556,7 +700,43 @@ export default function AnalyticsClient() {
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-sm disabled:opacity-40">
                 Export JSON
               </button>
+              <button type="button" disabled={loading || (!rows.length && !complianceResults.length && !feedbackResults.length)}
+                onClick={exportExcel}
+                className="rounded-lg border border-emerald-500/30 px-4 py-2 text-sm text-emerald-300 disabled:opacity-40">
+                Excel XLSX
+              </button>
+              <button type="button" disabled={loading || (!rows.length && !complianceResults.length && !feedbackResults.length && !failures.length)}
+                onClick={saveCurrentReport}
+                className="rounded-lg border border-indigo-500/30 px-4 py-2 text-sm text-indigo-300 disabled:opacity-40">
+                Save Report
+              </button>
             </div>
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-[#182333] p-3 sm:p-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-sm font-medium text-slate-200">Saved Reports (this tab)</span>
+              <select aria-label="Saved reports" id="saved-postmaster-report" defaultValue=""
+                className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#0e1725] p-2 text-sm">
+                <option value="">Select a saved report...</option>
+                {savedReports.map(r => <option key={r.id} value={r.id}>{r.title}</option>)}
+              </select>
+              <button type="button" disabled={loading || !savedReports.length}
+                onClick={() => {
+                  const selector = document.getElementById("saved-postmaster-report") as HTMLSelectElement | null;
+                  if (selector?.value) loadSavedReport(selector.value);
+                }}
+                className="rounded-lg border border-white/15 px-3 py-2 text-xs disabled:opacity-40">Load</button>
+              <button type="button" disabled={loading || !savedReports.length}
+                onClick={() => {
+                  const selector = document.getElementById("saved-postmaster-report") as HTMLSelectElement | null;
+                  if (!selector?.value) return;
+                  persistReports(savedReports.filter(r => r.id !== selector.value));
+                  selector.value = "";
+                }}
+                className="rounded-lg border border-rose-500/30 px-3 py-2 text-xs text-rose-300 disabled:opacity-40">Delete</button>
+            </div>
+            {reportMessage && <p className="mt-2 text-xs text-slate-400" role="status">{reportMessage}</p>}
           </div>
 
                     <DomainsOverview
