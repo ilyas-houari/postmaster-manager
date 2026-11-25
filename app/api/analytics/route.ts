@@ -1,4 +1,4 @@
-import { readPostmasterCache } from "@/lib/postmaster-cache";
+﻿import { readPostmasterCache } from "@/lib/postmaster-cache";
 import { NextRequest, NextResponse } from "next/server";
 import { hasAppAccess } from "@/lib/access";
 import { getGoogleToken } from "@/lib/google-token";
@@ -183,10 +183,12 @@ export async function POST(req: NextRequest) {
       { error: "Too many result pages; narrow the date range." },
       { status: 422 }
     );
-  } catch {
+  } catch (error) {
+    console.error("Analytics request failed:", error instanceof Error ? error.message : "Unknown error");
     return NextResponse.json(
       { error: "Analytics request failed. Please try again." },
       { status: 500 }
     );
   }
 }
+

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { hasAppAccess } from "@/lib/access";
 import { getGoogleToken } from "@/lib/google-token";
 
@@ -43,10 +43,12 @@ export async function GET(req: NextRequest) {
       domain,
       compliance: data,
     });
-  } catch {
+  } catch (error) {
+    console.error("Analytics Compliance request failed:", error instanceof Error ? error.message : "Unknown error");
     return NextResponse.json(
       { error: "Compliance request failed. Please try again." },
       { status: 500 }
     );
   }
 }
+
