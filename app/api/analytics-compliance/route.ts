@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { hasAppAccess } from "@/lib/access";
 import { getGoogleToken } from "@/lib/google-token";
 
@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
 
   const domain = req.nextUrl.searchParams.get("domain")?.trim().toLowerCase();
 
-  if (!domain || !/^[a-z0-9.-]+$/.test(domain) || domain.length > 253) {
+  if (!domain || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain)) {
     return NextResponse.json(
       { error: "Invalid domain" },
       { status: 400 }
@@ -43,9 +43,9 @@ export async function GET(req: NextRequest) {
       domain,
       compliance: data,
     });
-  } catch (error) {
+  } catch {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Request failed" },
+      { error: "Compliance request failed. Please try again." },
       { status: 500 }
     );
   }

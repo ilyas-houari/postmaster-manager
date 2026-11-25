@@ -2,6 +2,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import AnalyticsClient from "./dashboard/analytics/analytics-client";
+import ThemeToggle from "./theme-toggle";
 
 type Result = { domain: string; status: string; error?: string; record?: string };
 type Action = "add" | "get" | "verify";
@@ -175,7 +176,10 @@ export default function DomainsForm({ email, switchAccount }: { email: string; s
           <div><p className="text-[11px] font-medium text-indigo-300">POSTMASTER / {view === "workspace" ? "DASHBOARD" : view === "activity" ? "ACTIVITY" : "ANALYTICS"}</p>
             <h1 className="mt-0.5 text-xl font-semibold tracking-tight">{view === "workspace" ? "Domain workspace" : view === "activity" ? "Activity history" : "Analytics & Export"}</h1>
           </div>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
           <div className="flex items-center gap-2 rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2 text-xs text-slate-300"><span className="h-2 w-2 rounded-full bg-emerald-400"/><span className="hidden sm:inline">Google connected</span><span className="sm:hidden">Connected</span></div>
+          </div>
         </header>
 
         {view === "analytics" && <div className="min-h-0 flex-1 overflow-y-auto"><AnalyticsClient key={email.trim().toLowerCase()} /></div>}

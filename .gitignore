@@ -55,3 +55,34 @@ app/api/**/*.backup.txt
 
 **/*backup*.txt
 .vercel
+
+.env
+.venv/
+__pycache__/
+
+
+sync/google_token.json
+
+# Local backups and temporary files
+*.bak
+*.backup
+*.before-*
+*-backup
+*-backup.*
+*.zip
+*.log
+check_tables.py
+test_db.py
+
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Database and Google OAuth secrets
+.env
+.env.*
+!.env.example
+sync/google_token.json
+sync/*.json

@@ -137,6 +137,7 @@ function AnalyticsClientForAccount({ accountEmail }: { accountEmail: string }) {
         progress: "",
       };
   const [input, setInput] = useState(initialCache.input);
+  const [setupOpen, setSetupOpen] = useState(false);
   const [includeZeroErrors, setIncludeZeroErrors] = useState(initialCache.includeZeroErrors);
   const [detailFilters, setDetailFilters] = useState<Record<string, string>>(initialCache.detailFilters);
   const [activeDetailFilter, setActiveDetailFilter] = useState(initialCache.activeDetailFilter);
@@ -205,6 +206,7 @@ function AnalyticsClientForAccount({ accountEmail }: { accountEmail: string }) {
   const [progress, setProgress] = useState(initialCache.progress);
   const [savedReports, setSavedReports] = useState<SavedReport[]>([]);
   const [reportMessage, setReportMessage] = useState("");
+  const [showFullDataView, setShowFullDataView] = useState(false);
   const reportStorageKey = `postmaster-analytics-reports-v1:${normalizedEmail}`;
 
   useEffect(() => {
@@ -550,6 +552,53 @@ function AnalyticsClientForAccount({ accountEmail }: { accountEmail: string }) {
       <div className="w-full min-w-0 space-y-6">
         
 
+        <div data-analytics-floating-dropdown className="relative z-30 flex min-h-14 flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-[#182333] px-4 py-3 shadow-sm">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-300" aria-hidden="true">
+              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M7 12h10M10 17h4" /></svg>
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">Analysis Setup</div>
+              <div className="truncate text-xs text-slate-400">
+                {domains.length} domains · {days} days · {selectedMetrics.length} metrics
+                {loading ? ` · ${progress}` : ""}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={setupOpen}
+            onClick={() => setSetupOpen(open => !open)}
+            className="flex shrink-0 items-center gap-2 rounded-lg border border-indigo-400/25 bg-indigo-500/15 px-4 py-2 text-sm font-semibold text-indigo-100 transition-all duration-300 hover:-translate-y-0.5 hover:bg-indigo-500/25 motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400"
+          >
+            {setupOpen ? "Close" : "Configure Analysis"}
+            <svg className={`h-4 w-4 transition-transform duration-500 ease-out motion-reduce:transition-none ${setupOpen ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+          </button>
+        </div>
+        <>
+            <button
+              type="button"
+              aria-label="Close analysis settings"
+              onClick={() => setSetupOpen(false)}
+              tabIndex={setupOpen ? 0 : -1}
+              aria-hidden="true"
+              className={`fixed inset-0 z-40 cursor-default bg-black/50 transition-opacity duration-500 ease-out motion-reduce:transition-none ${setupOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
+            />
+            <div
+              role="dialog"
+              aria-label="Configure Analysis"
+              aria-hidden={!setupOpen}
+              inert={!setupOpen}
+              className={`fixed inset-x-3 top-5 z-50 max-h-[calc(100dvh-2.5rem)] overflow-y-auto rounded-2xl border border-indigo-400/25 bg-[#111c2b] p-3 shadow-2xl transition-[opacity,transform,visibility] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none sm:inset-x-auto sm:right-6 sm:top-16 sm:w-[min(920px,calc(100vw-3rem))] sm:p-5 ${setupOpen ? "visible pointer-events-auto translate-y-0 scale-100 opacity-100" : "invisible pointer-events-none -translate-y-5 scale-[0.97] opacity-0"}`}
+            >
+              <div className="mb-4 flex items-center justify-between border-b border-white/10 pb-3">
+                <div>
+                  <h2 className="text-base font-semibold">Configure Analysis</h2>
+                  <p className="mt-1 text-xs text-slate-400">Domains, date range and data options</p>
+                </div>
+                <button type="button" aria-label="Close" onClick={() => setSetupOpen(false)} className="rounded-lg border border-white/15 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/10">Close</button>
+              </div>
         <section className="grid gap-5 lg:grid-cols-[2fr_1fr]">
           <div className="rounded-2xl border border-white/10 bg-[#182333] p-5">
             <h2 className="mb-3 font-semibold">Domains</h2>
@@ -600,7 +649,7 @@ function AnalyticsClientForAccount({ accountEmail }: { accountEmail: string }) {
             </div>
             <button
               disabled={loading || !domains.length || !selectedMetrics.length}
-              onClick={analyze}
+              onClick={() => { setSetupOpen(false); void analyze(); }}
               className="mt-5 w-full rounded-xl bg-indigo-600 p-3 font-semibold hover:bg-indigo-500 disabled:opacity-40"
             >
               {loading ? "Analyzing..." : "Analyze Domains"}
@@ -660,6 +709,8 @@ function AnalyticsClientForAccount({ accountEmail }: { accountEmail: string }) {
             <p className="mt-3 text-xs text-slate-400">{progress}</p>
           </div>
         </section>
+            </div>
+          </>
 
         <section className="rounded-2xl border border-white/10 bg-[#182333] p-5">
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -739,7 +790,20 @@ function AnalyticsClientForAccount({ accountEmail }: { accountEmail: string }) {
             {reportMessage && <p className="mt-2 text-xs text-slate-400" role="status">{reportMessage}</p>}
           </div>
 
-                    <DomainsOverview
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-slate-400">
+              Select a domain and click Explore to see its history, errors and compliance.
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowFullDataView(true)}
+              disabled={!rows.length && !complianceResults.length && !feedbackResults.length}
+              className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-indigo-400/40 hover:text-indigo-200 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Full Data View (optional)
+            </button>
+          </div>
+          <DomainsOverview
             rows={rows}
             complianceResults={complianceResults}
             feedbackResults={feedbackResults}
@@ -747,7 +811,23 @@ function AnalyticsClientForAccount({ accountEmail }: { accountEmail: string }) {
             selectedMetrics={selectedMetrics}
           />
 
-          <details className="mt-5 rounded-xl border border-white/10 p-4">
+          {showFullDataView && (
+            <div className="fixed inset-0 z-[95] flex items-center justify-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Full analytics data">
+              <button type="button" aria-label="Close full data view" onClick={() => setShowFullDataView(false)}
+                className="absolute inset-0 bg-slate-950/75 backdrop-blur-sm" />
+              <div className="relative flex max-h-[94dvh] w-full max-w-[1600px] min-w-0 flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#152234] shadow-2xl">
+                <div className="flex shrink-0 items-center justify-between gap-4 border-b border-white/10 px-4 py-3 sm:px-6">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-100">Full Data View</h3>
+                    <p className="text-xs text-slate-400">Daily statistics, column filters, compliance and feedback</p>
+                  </div>
+                  <button type="button" onClick={() => setShowFullDataView(false)} autoFocus
+                    className="shrink-0 rounded-lg border border-white/15 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/10">
+                    Close
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 sm:px-5">
+          <details open className="mt-4 rounded-xl border border-white/10 p-4">
             <summary className="cursor-pointer font-medium text-indigo-300">
               Advanced Details - Daily Statistics / Compliance / Feedback
             </summary>
@@ -1299,6 +1379,10 @@ function AnalyticsClientForAccount({ accountEmail }: { accountEmail: string }) {
           )}
             </div>
           </details>
+                </div>
+              </div>
+            </div>
+          )}
           {failures.length > 0 && (
             <div className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/5 p-4">
               <h3 className="mb-2 text-sm font-semibold text-rose-300">Errors</h3>

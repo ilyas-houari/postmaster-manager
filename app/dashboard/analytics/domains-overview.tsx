@@ -2,13 +2,7 @@
 
 import { useMemo, useState } from "react";
 
-type Row = {
-  domain: string;
-  date: string;
-  metric: string;
-  value: string;
-};
-
+type Row = { domain: string; date: string; metric: string; value: string };
 type Compliance = {
   domain: string;
   rows: { requirement: string; status: string }[];
@@ -17,21 +11,42 @@ type Compliance = {
   deliverability: string;
   reason: string;
 };
+type Feedback = { domain: string; ids: { date: string; id: string }[] };
 
-type Feedback = {
+type Group = {
   domain: string;
-  ids: { date: string; id: string }[];
-};
-
-type DomainInfo = {
-  domain: string;
-  latest: string;
-  metrics: Record<string, string>;
-  activeErrors: Row[];
+  dates: Map<string, Record<string, string>>;
+  latest: Record<string, string>;
+  latestDate: string;
   compliance?: Compliance;
   feedback?: Feedback;
-  failed: boolean;
+  problems: string[];
+  activeErrors: Row[];
 };
+
+const columns = [
+  { group: "spam", key: "spam", label: "Spam Rate" },
+  { group: "auth", key: "spf", label: "SPF" },
+  { group: "auth", key: "dkim", label: "DKIM" },
+  { group: "auth", key: "dmarc", label: "DMARC" },
+  { group: "tls", key: "tls_inbound", label: "TLS Inbound" },
+  { group: "tls", key: "tls_outbound", label: "TLS Outbound" },
+  { group: "tls_count", key: "count_tls_inbound", label: "TLS In Count" },
+  { group: "tls_count", key: "count_tls_outbound", label: "TLS Out Count" },
+] as const;
+
+function isActive(value: string): boolean {
+  const n = Number.parseFloat(value.replace(/,/g, ""));
+  return Number.isFinite(n) && n > 0;
+}
+function errorLabel(metric: string) {
+  return metric.replace(/^error_/, "").replaceAll("_", " ");
+}
+function tone(status: string) {
+  if (["COMPLIANT", "PASS"].includes(status)) return "text-emerald-400";
+  if (["NEEDS_WORK", "FAILED", "FAIL"].includes(status)) return "text-amber-400";
+  return "text-slate-400";
+}
 
 export default function DomainsOverview({
   rows, complianceResults, feedbackResults, failures, selectedMetrics,
@@ -42,366 +57,135 @@ export default function DomainsOverview({
   failures: string[];
   selectedMetrics: string[];
 }) {
-  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const [sort, setSort] = useState("attention");
-  const [spamFilter, setSpamFilter] = useState("all");
-  const [errorFilter, setErrorFilter] = useState("all");
-  const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState<string | null>(null);
-
-  const domains = useMemo(() => {
-    const map = new Map<string, DomainInfo>();
-
-    function get(domain: string) {
-      if (!map.has(domain)) {
-        map.set(domain, {
-          domain, latest: "", metrics: {},
-          activeErrors: [], failed: false,
-        });
+  const [order, setOrder] = useState("attention");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const activeColumns = columns.filter(c => selectedMetrics.includes(c.group));
+  const groups = useMemo(() => {
+    const map = new Map<string, Group>();
+    function get(name: string) {
+      let group = map.get(name);
+      if (!group) {
+        group = { domain: name, dates: new Map(), latest: {}, latestDate: "", problems: [], activeErrors: [] };
+        map.set(name, group);
       }
-      return map.get(domain)!;
+      return group;
     }
-
-    for (const r of rows) {
-      const d = get(r.domain);
-
-      if (r.metric.startsWith("error_")) {
-        if (Number.parseFloat(r.value) > 0) {
-          d.activeErrors.push(r);
+    for (const row of rows) {
+      const group = get(row.domain);
+      if (!group.dates.has(row.date)) group.dates.set(row.date, {});
+      group.dates.get(row.date)![row.metric] = row.value;
+      if (row.date !== "N/A" && row.date > group.latestDate) group.latestDate = row.date;
+      if (row.metric.startsWith("error_") && isActive(row.value)) group.activeErrors.push(row);
+    }
+    for (const c of complianceResults) get(c.domain).compliance = c;
+    for (const f of feedbackResults) get(f.domain).feedback = f;
+    for (const message of failures) {
+      const sep = message.indexOf(":");
+      const name = (sep === -1 ? message : message.slice(0, sep)).trim();
+      if (name) get(name).problems.push(message);
+    }
+    for (const group of map.values()) {
+      const dates = [...group.dates.keys()].sort((a, b) => b.localeCompare(a));
+      // Per-metric latest value: don't show N/A if a different metric has a newer date.
+      for (const date of dates) {
+        for (const [metric, value] of Object.entries(group.dates.get(date)!)) {
+          if (!(metric in group.latest)) group.latest[metric] = value;
         }
-      } else if (r.date > d.latest) {
-        d.latest = r.date;
-        d.metrics = { [r.metric]: r.value };
-      } else if (r.date === d.latest) {
-        d.metrics[r.metric] = r.value;
       }
+      group.activeErrors.sort((a, b) => b.date.localeCompare(a.date));
     }
-
-    for (const c of complianceResults) {
-      get(c.domain).compliance = c;
-    }
-
-    for (const f of feedbackResults) {
-      get(f.domain).feedback = f;
-    }
-
-    for (const failure of failures) {
-      const domain = failure.split(":")[0].trim();
-      if (domain) get(domain).failed = true;
-    }
-
     return [...map.values()];
   }, [rows, complianceResults, feedbackResults, failures]);
 
-  function status(d: DomainInfo) {
-    if (d.compliance?.deliverability) {
-      return d.compliance.deliverability;
-    }
-    return d.failed ? "FAILED" : "NO_STATUS";
-  }
-
-  const visible = domains
-    .filter(d => d.domain.toLowerCase().includes(search.toLowerCase()))
-    .filter(d => {
-      if (filter === "attention") {
-        return status(d) === "NEEDS_WORK" ||
-          status(d) === "FAILED" || d.activeErrors.length > 0;
-      }
-      if (filter === "healthy") {
-        return status(d) === "COMPLIANT" &&
-          d.activeErrors.length === 0;
-      }
-      if (filter === "no_data") {
-        return status(d) === "NO_STATUS";
-      }
-      return true;
-    })
-    .filter(d => {
-      if (!selectedMetrics.includes("spam") || spamFilter === "all") return true;
-      const v = Number.parseFloat(d.metrics.spam ?? "");
-      if (!Number.isFinite(v)) return false;
-      return spamFilter === "gte5" ? v >= 5 : spamFilter === "gte10" ? v >= 10 : v < 5;
-    })
-    .filter(d => {
-      if (!selectedMetrics.includes("delivery") || errorFilter === "all") return true;
-      return errorFilter === "active" ? d.activeErrors.length > 0 : d.activeErrors.length === 0;
-    })
+  const needsAttention = (g: Group) =>
+    ["NEEDS_WORK", "FAILED"].includes(g.compliance?.deliverability || "") ||
+    g.activeErrors.length > 0 || g.problems.length > 0;
+  const filtered = groups.filter(g => g.domain.toLowerCase().includes(query.toLowerCase().trim()))
+    .filter(g => filter === "all" || (filter === "attention" && needsAttention(g)) ||
+      (filter === "errors" && g.activeErrors.length > 0) ||
+      (filter === "healthy" && !needsAttention(g) && g.compliance?.deliverability === "COMPLIANT"))
     .sort((a, b) => {
-      if (sort === "spam") {
-        return (Number.parseFloat(b.metrics.spam || "") || 0) - (Number.parseFloat(a.metrics.spam || "") || 0) || a.domain.localeCompare(b.domain);
-      }
-      if (sort === "errors") {
-        return b.activeErrors.length - a.activeErrors.length ||
-          a.domain.localeCompare(b.domain);
-      }
-      if (sort === "attention") {
-        const score = (d: DomainInfo) =>
-          (status(d) === "NEEDS_WORK" || status(d) === "FAILED" ? 1000 : 0) +
-          d.activeErrors.length;
-        return score(b) - score(a) ||
-          a.domain.localeCompare(b.domain);
-      }
-      return a.domain.localeCompare(b.domain);
+      if (order === "errors") return b.activeErrors.length - a.activeErrors.length || a.domain.localeCompare(b.domain);
+      if (order === "az") return a.domain.localeCompare(b.domain);
+      if (order === "newest") return b.latestDate.localeCompare(a.latestDate);
+      return Number(needsAttention(b)) - Number(needsAttention(a)) || b.activeErrors.length - a.activeErrors.length || a.domain.localeCompare(b.domain);
     });
-
-  const totalPages = Math.max(1, Math.ceil(visible.length / 25));
-  const currentPage = Math.min(page, totalPages);
-  const shown = visible.slice((currentPage - 1) * 25, currentPage * 25);
-  const current = domains.find(d => d.domain === selected);
-
-  const attention = domains.filter(d =>
-    status(d) === "NEEDS_WORK" ||
-    status(d) === "FAILED" || d.activeErrors.length > 0
-  ).length;
-  const healthy = domains.filter(d =>
-    status(d) === "COMPLIANT" && d.activeErrors.length === 0
-  ).length;
-
-  function value(d: DomainInfo, key: string) {
-    return d.metrics[key] ?? "N/A";
-  }
 
   return (
     <section className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {[
-          ["Domains", domains.length],
-          ["Need Attention", attention],
-          ["Healthy", healthy],
-          ["Active Error Records", domains.reduce(
-            (sum, d) => sum + d.activeErrors.length, 0
-          )],
-        ].map(([label, count]) => (
-          <div key={label} className="rounded-xl border border-white/10 bg-[#101b2a] p-4">
-            <p className="text-xs text-slate-400">{label}</p>
-            <p className="mt-2 text-2xl font-semibold">{count}</p>
-          </div>
-        ))}
-      </div>
-
-      <div className="flex flex-wrap gap-3">
-        <input
-          value={search}
-          onChange={e => { setSearch(e.target.value); setPage(1); }}
-          placeholder="Search domain..."
-          className="min-w-[180px] flex-1 rounded-lg border border-white/10 bg-[#101b2a] px-3 py-2 text-sm outline-none focus:border-indigo-500"
-        />
-        <select
-          value={filter}
-          onChange={e => { setFilter(e.target.value); setPage(1); }}
-          className="rounded-lg border border-white/10 bg-[#101b2a] px-3 py-2 text-sm"
-        >
-          <option value="all">All Domains</option>
-          <option value="attention">Need Attention</option>
-          <option value="healthy">Healthy</option>
-          <option value="no_data">No Status</option>
-        </select>
-        <select
-          value={sort}
-          onChange={e => setSort(e.target.value)}
-          className="rounded-lg border border-white/10 bg-[#101b2a] px-3 py-2 text-sm"
-        >
-          <option value="attention">Attention First</option>
-          <option value="domain">Domain A-Z</option>
-          <option value="errors">Most Errors</option>
-          {selectedMetrics.includes("spam") && <option value="spam">Highest Spam Rate</option>}
-        </select>
-        {selectedMetrics.includes("spam") && <select aria-label="Spam rate filter"
-          value={spamFilter} onChange={e => {setSpamFilter(e.target.value); setPage(1);}}
-          className="rounded-lg border border-white/10 bg-[#101b2a] px-3 py-2 text-sm">
-          <option value="all">Any Spam Rate</option>
-          <option value="lt5">Spam below 5%</option>
-          <option value="gte5">Spam 5%+</option>
-          <option value="gte10">Spam 10%+</option>
-        </select>}
-        {selectedMetrics.includes("delivery") && <select aria-label="Delivery error filter"
-          value={errorFilter} onChange={e => {setErrorFilter(e.target.value); setPage(1);}}
-          className="rounded-lg border border-white/10 bg-[#101b2a] px-3 py-2 text-sm">
-          <option value="all">All Error Levels</option>
-          <option value="active">Active Errors</option>
-          <option value="clear">No Active Errors</option>
-        </select>}
-      </div>
-
-      <div className="overflow-x-auto rounded-xl border border-white/10">
-        <table className="w-full min-w-[360px] text-left text-xs sm:text-sm">
-          <thead className="bg-[#253247] text-slate-300">
-            <tr>
-              <th className="p-3">Domain</th>
-              {selectedMetrics.includes("compliance") && (
-                <th className="p-3">Deliverability</th>
-              )}
-              {[
-                { group: "spam", key: "spam", label: "Spam" },
-                { group: "auth", key: "spf", label: "SPF" },
-                { group: "auth", key: "dkim", label: "DKIM" },
-                { group: "auth", key: "dmarc", label: "DMARC" },
-                { group: "tls", key: "tls_inbound", label: "TLS Inbound" },
-                { group: "tls", key: "tls_outbound", label: "TLS Outbound" },
-                { group: "tls_count", key: "count_tls_inbound", label: "TLS In Count" },
-                { group: "tls_count", key: "count_tls_outbound", label: "TLS Out Count" },
-              ].filter(x => selectedMetrics.includes(x.group)).map(x => (
-                <th key={x.key} className="whitespace-nowrap p-3">
-                  {x.label}
-                </th>
-              ))}
-              {selectedMetrics.includes("delivery") && (
-                <th className="p-3">Active Errors</th>
-              )}
-              {selectedMetrics.includes("feedback") && (
-                <th className="p-3">Feedback IDs</th>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map(d => (
-              <tr
-                key={d.domain}
-                className="border-t border-white/5 hover:bg-white/5"
-              >
-                <td className="p-3">
-                  <button
-                    onClick={() => setSelected(
-                      selected === d.domain ? null : d.domain
-                    )}
-                    className="font-medium text-indigo-300 hover:underline"
-                  >
-                    {d.domain}
-                  </button>
-                </td>
-                {selectedMetrics.includes("compliance") && (
-                  <td className="whitespace-nowrap p-3">
-                    <span className={
-                      status(d) === "COMPLIANT"
-                        ? "text-emerald-400"
-                        : status(d) === "NEEDS_WORK" || status(d) === "FAILED"
-                          ? "text-amber-300"
-                          : "text-slate-400"
-                    }>
-                      {status(d).replace(/_/g, " ")}
-                    </span>
-                  </td>
-                )}
-
-                {[
-                  { group: "spam", key: "spam" },
-                  { group: "auth", key: "spf" },
-                  { group: "auth", key: "dkim" },
-                  { group: "auth", key: "dmarc" },
-                  { group: "tls", key: "tls_inbound" },
-                  { group: "tls", key: "tls_outbound" },
-                  { group: "tls_count", key: "count_tls_inbound" },
-                  { group: "tls_count", key: "count_tls_outbound" },
-                ].filter(x => selectedMetrics.includes(x.group)).map(x => (
-                  <td key={x.key} className="p-3 text-slate-300">
-                    {value(d, x.key)}
-                  </td>
-                ))}
-
-                {selectedMetrics.includes("delivery") && (
-                  <td className={
-                    "p-3 font-medium " +
-                    (d.activeErrors.length ? "text-amber-300" : "text-slate-400")
-                  }>
-                    {d.activeErrors.length}
-                  </td>
-                )}
-
-                {selectedMetrics.includes("feedback") && (
-                  <td className="p-3 text-slate-300">
-                    {d.feedback ? d.feedback.ids.length || "No data" : "N/A"}
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!shown.length && (
-          <p className="p-6 text-center text-sm text-slate-400">
-            No matching domains.
-          </p>
-        )}
-      </div>
-
-      <div className="flex items-center justify-between text-xs text-slate-400">
-        <span>{visible.length} matching domain(s) - 25 per page</span>
-        <div className="flex items-center gap-3">
-          <button
-            disabled={currentPage <= 1}
-            onClick={() => setPage(p => Math.max(1, p - 1))}
-            className="disabled:opacity-30"
-          >Previous</button>
-          <span>{currentPage} / {totalPages}</span>
-          <button
-            disabled={currentPage >= totalPages}
-            onClick={() => setPage(p => p + 1)}
-            className="disabled:opacity-30"
-          >Next</button>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-slate-100">Domain Results</h3>
+          <p className="mt-1 text-xs text-slate-400">Each domain has its own summary, daily history and diagnostics.</p>
         </div>
+        <span className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300">{filtered.length} of {groups.length} domains</span>
       </div>
-
-      {current && (
-        <div className="rounded-xl border border-indigo-500/30 bg-[#101b2a] p-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h3 className="font-semibold">{current.domain}</h3>
-            <button
-              onClick={() => setSelected(null)}
-              className="text-xs text-slate-400 hover:text-white"
-            >Close</button>
-          </div>
-          <p className="mb-3 text-xs text-slate-400">
-            Latest available statistics: {current.latest || "N/A"}
-          </p>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {[
-              ...(selectedMetrics.includes("spam") ? [["Spam Rate", value(current, "spam")]] : []),
-              ...(selectedMetrics.includes("auth") ? [
-                ["SPF", value(current, "spf")], ["DKIM", value(current, "dkim")],
-                ["DMARC", value(current, "dmarc")],
-              ] : []),
-              ...(selectedMetrics.includes("tls") ? [
-                ["TLS Inbound", value(current, "tls_inbound")],
-                ["TLS Outbound", value(current, "tls_outbound")],
-              ] : []),
-              ...(selectedMetrics.includes("tls_count") ? [
-                ["TLS In Count", value(current, "count_tls_inbound")],
-                ["TLS Out Count", value(current, "count_tls_outbound")],
-              ] : []),
-              ...(selectedMetrics.includes("feedback") ? [
-                ["Feedback IDs", current.feedback?.ids.length ?? "N/A"],
-              ] : []),
-              ...(selectedMetrics.includes("compliance") ? [
-                ["Deliverability", status(current).replace(/_/g, " ")],
-                ["Reason", current.compliance?.reason.replace(/_/g, " ") || "N/A"],
-              ] : []),
-            ].map(([label, result]) => (
-              <div key={label} className="rounded-lg border border-white/10 p-3">
-                <p className="text-xs text-slate-400">{label}</p>
-                <p className="mt-1 break-words text-sm font-medium">{result}</p>
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+        <input aria-label="Find domain" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search domain..." className="min-w-0 rounded-lg border border-white/10 bg-[#0e1725] px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-indigo-400" />
+        <select aria-label="Filter domains" value={filter} onChange={e => setFilter(e.target.value)} className="rounded-lg border border-white/10 bg-[#0e1725] px-3 py-2.5 text-sm text-slate-200">
+          <option value="all">All domains</option><option value="attention">Need attention</option><option value="errors">Has errors</option><option value="healthy">Healthy</option>
+        </select>
+        <select aria-label="Sort domains" value={order} onChange={e => setOrder(e.target.value)} className="rounded-lg border border-white/10 bg-[#0e1725] px-3 py-2.5 text-sm text-slate-200">
+          <option value="attention">Attention first</option><option value="errors">Most errors</option><option value="newest">Latest activity</option><option value="az">Domain A-Z</option>
+        </select>
+      </div>
+      {filtered.length === 0 && <p className="rounded-xl border border-white/10 p-5 text-sm text-slate-400">No matching domains.</p>}
+      {filtered.map(group => {
+        const status = selectedMetrics.includes("compliance") ? group.compliance?.deliverability || "NO STATUS" : "";
+        const dates = [...group.dates.keys()].filter(d => d !== "N/A").sort((a, b) => b.localeCompare(a));
+        const showAll = !!expanded[group.domain];
+        const displayedDates = showAll ? dates : dates.slice(0, 7);
+        const latestErrors = group.activeErrors.slice(0, showAll ? 100 : 5);
+        return (
+          <article key={group.domain} className="pm-domain-result-card min-w-0 overflow-hidden rounded-2xl border bg-[#182333]">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-white/[0.025] px-4 py-4 sm:px-5">
+              <div className="min-w-0">
+                <h4 className="break-all text-base font-semibold text-slate-100 sm:text-lg">{group.domain}</h4>
+                <p className="mt-1 text-xs text-slate-400">Last data: {group.latestDate || "N/A"} · {dates.length} dates</p>
               </div>
-            ))}
-          </div>
-          {current.activeErrors.length > 0 && (
-            <div className="mt-4 space-y-2">
-              <h4 className="text-sm font-semibold text-amber-300">
-                Active Delivery Errors
-              </h4>
-              {current.activeErrors.slice(0, 20).map((e, i) => (
-                <div key={i} className="flex flex-wrap justify-between gap-2 border-t border-white/10 py-2 text-xs">
-                  <span>{e.date} - {e.metric.replace(/_/g, " ")}</span>
-                  <span className="text-amber-300">{e.value}</span>
-                </div>
-              ))}
-              {current.activeErrors.length > 20 && (
-                <p className="text-xs text-slate-400">
-                  Open Advanced Details to view all records.
-                </p>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {status && <span className={`rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold ${tone(status.replaceAll(" ", "_"))}`}>{status.replaceAll("_", " ")}</span>}
+                {selectedMetrics.includes("delivery") && <span className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${group.activeErrors.length ? "border-amber-400/20 bg-amber-400/10 text-amber-300" : "border-white/10 text-slate-300"}`}>{group.activeErrors.length} active error records</span>}
+              </div>
             </div>
-          )}
-        </div>
-      )}
+            {activeColumns.length > 0 && <div className="grid grid-cols-2 gap-2 p-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 sm:p-5">
+              {activeColumns.map(c => <div key={c.key} className="min-w-0 rounded-xl border border-white/10 bg-[#101b2a] p-3">
+                <p className="text-xs text-slate-400">{c.label}</p>
+                <p className="mt-1 break-all text-base font-semibold tabular-nums text-slate-100">{group.latest[c.key] ?? "N/A"}</p>
+              </div>)}
+            </div>}
+            {activeColumns.length > 0 && dates.length > 0 && <div className="px-4 pb-4 sm:px-5">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <h5 className="text-sm font-semibold text-slate-200">Daily history</h5>
+                <span className="text-xs text-slate-400">Newest dates first</span>
+              </div>
+              <div className="max-w-full overflow-x-auto rounded-xl border border-white/10">
+                <table className="w-full min-w-max text-left text-xs">
+                  <thead className="bg-white/[0.06] text-slate-300"><tr><th className="sticky left-0 z-10 bg-[#27364b] px-3 py-3 font-semibold">Date</th>{activeColumns.map(c => <th key={c.key} className="whitespace-nowrap px-3 py-3 font-semibold">{c.label}</th>)}</tr></thead>
+                  <tbody>{displayedDates.map(date => <tr key={date} className="border-t border-white/10 text-slate-300"><td className="sticky left-0 bg-[#182333] px-3 py-3 font-medium tabular-nums">{date}</td>{activeColumns.map(c => <td key={c.key} className="whitespace-nowrap px-3 py-3 tabular-nums">{group.dates.get(date)?.[c.key] ?? "N/A"}</td>)}</tr>)}</tbody>
+                </table>
+              </div>
+              {dates.length > 7 && <button type="button" onClick={() => setExpanded(old => ({...old, [group.domain]: !old[group.domain]}))} className="mt-3 rounded-lg border border-indigo-400/30 px-3 py-2 text-xs font-medium text-indigo-300 hover:bg-indigo-500/10">{showAll ? "Show recent 7 dates" : `Show all ${dates.length} dates`}</button>}
+            </div>}
+            {selectedMetrics.includes("delivery") && group.activeErrors.length > 0 && <div className="border-t border-white/10 px-4 py-4 sm:px-5">
+              <h5 className="mb-2 text-sm font-semibold text-slate-200">Delivery errors</h5>
+              <div className="space-y-1.5">{latestErrors.map((r, i) => <div key={`${r.date}-${r.metric}-${i}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-400/[0.06] px-3 py-2 text-xs"><span className="break-words text-slate-300">{r.date} · {errorLabel(r.metric)}</span><strong className="tabular-nums text-amber-300">{r.value}</strong></div>)}</div>
+              {group.activeErrors.length > 5 && !showAll && <p className="mt-2 text-xs text-slate-400">Showing latest 5 error records. Use “Show all dates” to expand history.</p>}
+            </div>}
+            {selectedMetrics.includes("compliance") && group.compliance && <div className="border-t border-white/10 px-4 py-4 sm:px-5">
+              <h5 className="mb-2 text-sm font-semibold text-slate-200">Compliance</h5>
+              {group.compliance.reason && <p className="mb-3 text-xs text-slate-400">Deliverability reason: {group.compliance.reason.replaceAll("_", " ")}</p>}
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {[...group.compliance.rows, {requirement: "One-click unsubscribe", status: group.compliance.oneClick}, {requirement: "Honor unsubscribe", status: group.compliance.honor}].map((r,i) => <div key={`${r.requirement}-${i}`} className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs"><span className="min-w-0 break-words text-slate-300">{r.requirement.replaceAll("_", " ")}</span><span className={`shrink-0 font-semibold ${tone(r.status)}`}>{r.status.replaceAll("_", " ")}</span></div>)}
+              </div>
+            </div>}
+            {selectedMetrics.includes("feedback") && <div className="border-t border-white/10 px-4 py-3 text-xs sm:px-5"><strong className="mr-2 text-slate-200">Feedback Loop:</strong>{group.feedback ? (group.feedback.ids.length ? group.feedback.ids.map((id,i) => <span key={`${id.id}-${i}`} className="mr-2 inline-block break-all text-indigo-300">{id.date}: {id.id}</span>) : <span className="text-slate-400">No data</span>) : <span className="text-slate-400">N/A</span>}</div>}
+            {group.problems.length > 0 && <div className="border-t border-rose-400/20 px-4 py-3 sm:px-5"><strong className="text-xs text-rose-300">Request issues</strong>{group.problems.map((msg,i) => <p key={i} className="mt-1 break-words text-xs text-rose-300">{msg}</p>)}</div>}
+          </article>
+        );
+      })}
     </section>
   );
 }

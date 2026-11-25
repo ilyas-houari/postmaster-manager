@@ -1,3 +1,4 @@
+import { readPostmasterCache } from "@/lib/postmaster-cache";
 import { NextRequest, NextResponse } from "next/server";
 import { hasAppAccess } from "@/lib/access";
 import { getGoogleToken } from "@/lib/google-token";
@@ -57,9 +58,13 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const input = await req.json();
-    const domain = String(input.domain || "").trim().toLowerCase();
-    const days = Number(input.days || 7);
+    const input: unknown = await req.json().catch(() => null);
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const body = input as Record<string, unknown>;
+    const domain = typeof body.domain === "string" ? body.domain.trim().toLowerCase() : "";
+    const days = Number(body.days ?? 7);
 
     if (
       domain.length > 253 ||
@@ -69,8 +74,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid input" }, { status: 400 });
     }
 
-    const selected: string[] = Array.isArray(input.categories)
-      ? input.categories.filter((x: unknown): x is string => typeof x === "string")
+    const selected: string[] = Array.isArray(body.categories)
+      ? (body.categories as unknown[]).filter((x: unknown): x is string => typeof x === "string")
       : ["auth", "delivery"];
 
     const metrics = allMetrics.filter(item =>
@@ -93,6 +98,35 @@ export async function POST(req: NextRequest) {
 
     const start = new Date(end);
     start.setUTCDate(start.getUTCDate() - days + 1);
+
+    // Read PostgreSQL cache first, retain the original Google API fallback.
+    try {
+      const cached = await readPostmasterCache(
+        domain,
+        days,
+        token,
+        metrics.map(m => m.name)
+      );
+
+      if (cached) {
+        return NextResponse.json({
+          domain,
+          days,
+          stats: cached,
+          source: "postgresql",
+        });
+      }
+    } catch (error) {
+      if (error instanceof Error &&
+          error.message === "DOMAIN_ACCESS_DENIED") {
+        return NextResponse.json(
+          { error: "Domain access denied" },
+          { status: 403 }
+        );
+      }
+
+      console.error("Cache unavailable, using Google API fallback");
+    }
 
     const results: unknown[] = [];
     let pageToken = "";
@@ -149,9 +183,9 @@ export async function POST(req: NextRequest) {
       { error: "Too many result pages; narrow the date range." },
       { status: 422 }
     );
-  } catch (error) {
+  } catch {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Request failed" },
+      { error: "Analytics request failed. Please try again." },
       { status: 500 }
     );
   }
